@@ -245,18 +245,28 @@ function renderPlayer(id){
 function matchesHtml(matches){
   const typeName=t=>t===1?'프로':t===2?'캐주얼':'경기';
   const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<3600)return Math.floor(s/60)+'분 전';if(s<86400)return Math.floor(s/3600)+'시간 전';return Math.floor(s/86400)+'일 전';};
+  const dur=s=>s?Math.floor(s/60)+':'+String(s%60).padStart(2,'0'):'';
+  const kda=(k,d)=>`${k??0}/${d??0}`;
+  const crown='<span title="MVP" style="color:var(--gold)">👑</span>';
   let h='';
   for(const m of matches){
-    const res=m.win?'<span style="color:var(--win);font-weight:800">승리</span>':'<span style="color:var(--lose);font-weight:800">패배</span>';
+    const col=m.win?'var(--win)':'var(--lose)';
+    const res=`<span style="color:${col};font-weight:800">${m.win?'승리':'패배'}</span>`;
     const t1=m.players.filter(x=>x.tm===1), t2=m.players.filter(x=>x.tm===2);
-    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}">${esc(x.h)} · ${esc(x.n)} <span class="muted">${x.mvp}</span></div>`).join('');
-    h+=`<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${m.win?'var(--win)':'var(--lose)'}">
-      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-        <div style="min-width:96px"><div>${res}</div><div class="muted" style="font-size:12px">${typeName(m.type)} · ${ago(m.ts)}</div>
-          <div class="muted" style="font-size:12px">내 캐릭: <b>${esc(m.myhero)}</b> · MVP ${m.mymvp}</div></div>
-        <div style="flex:1;min-width:150px;font-size:12px">${side(t1)}</div>
+    const side=(arr,right)=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}${right?';text-align:right':''}">${x.mv?crown+' ':''}${esc(x.h)} · ${esc(x.n)} <span class="muted">${kda(x.k,x.d)}</span></div>`).join('');
+    const mvpBadge=m.mvpme?` <span style="background:var(--gold);color:#000;font-weight:800;font-size:11px;border-radius:5px;padding:1px 6px">MVP</span>`:'';
+    h+=`<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${col}">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <div style="min-width:104px">
+          <div>${res}${mvpBadge}</div>
+          <div style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">${m.mys} : ${m.ens}</div>
+          <div class="muted" style="font-size:12px">${typeName(m.type)} · ${dur(m.dur)}</div>
+          <div class="muted" style="font-size:12px">${ago(m.ts)}</div>
+          <div class="muted" style="font-size:12px">내 캐릭 <b>${esc(m.myhero)}</b><br>KDA ${kda(m.myk,m.myd)} · MVP ${m.mymvp}</div>
+        </div>
+        <div style="flex:1;min-width:150px;font-size:12px">${side(t1,false)}</div>
         <div class="muted" style="font-weight:800">VS</div>
-        <div style="flex:1;min-width:150px;font-size:12px;text-align:right">${side(t2)}</div>
+        <div style="flex:1;min-width:150px;font-size:12px">${side(t2,true)}</div>
       </div></div>`;
   }
   return h||'<div class="card"><div class="empty">경기 기록 없음</div></div>';

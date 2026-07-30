@@ -166,11 +166,11 @@ def parse_matches(jsons, pid):
         me=next((p for p in prs if p.get("PlayerId")==pid),None)
         if not me: continue
         players=[{"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
-                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),"me":p.get("PlayerId")==pid}
+                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),"mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid}
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
-            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"players":players})
+            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
     return out[:20]
 
