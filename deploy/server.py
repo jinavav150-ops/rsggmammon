@@ -166,17 +166,17 @@ def parse_matches(jsons, pid):
         me=next((p for p in prs if p.get("PlayerId")==pid),None)
         if not me: continue
         players=[{"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
-                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"me":p.get("PlayerId")==pid}
+                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),"me":p.get("PlayerId")==pid}
                  for p in prs]
-        out.append({"ts":m.get("Timestamp"),"type":m.get("Type"),"t1":m.get("Team1Score"),
+        out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
-            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"players":players})
+            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
-    return out
+    return out[:20]
 
 def fetch_matches(s, match_ids, pid):
     if not match_ids: return []
-    s.sendall(fr({"request_id":10,"type":"get_match_results_info"},{"match_ids":match_ids[:20]}))
+    s.sendall(fr({"request_id":10,"type":"get_match_results_info"},{"match_ids":match_ids[-30:]}))
     for _ in range(30):
         env,body=rd(s)
         if env.get("type")=="get_match_results_info" and "match_result_info_jsons" in body:
