@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ricochet Squad 전적검색 · RS.GG</title>
+<style>
+:root{
+  --bg:#0e1015; --panel:#171a21; --panel2:#1e2230; --line:#2a2f3d; --tx:#e8eaf0; --mut:#9aa3b2;
+  --acc:#4a86ff; --acc2:#7db1ff; --gold:#e8b923; --silver:#c4cdd8; --bronze:#cd8248;
+  --win:#3fb27f; --lose:#e06c75;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg:#f2f4f8;--panel:#fff;--panel2:#f7f9fc;--line:#e2e6ee;--tx:#1a1e27;--mut:#69707e;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:14px}
+a{color:inherit;text-decoration:none;cursor:pointer}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+header{background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+.hd{display:flex;align-items:center;gap:16px;padding:12px 0;flex-wrap:wrap}
+.logo{font-weight:800;font-size:20px;letter-spacing:-.5px;display:flex;align-items:center;gap:9px}
+.logo span{background:linear-gradient(90deg,var(--acc),#8f6bff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.logo .emb{width:28px;height:28px;flex:none;filter:drop-shadow(0 2px 6px rgba(74,134,255,.35))}
+.ic{width:1.05em;height:1.05em;vertical-align:-.16em;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.btn .ic,.tab .ic{vertical-align:-.18em}
+.mammon{background:linear-gradient(90deg,#d99e12,#ffd76b 55%,#f2b829);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-weight:800;letter-spacing:1px}
+.owner{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--mut);background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 11px}
+.owner svg{width:14px;height:14px;fill:none;stroke:#e8b923;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round}
+footer .crown{width:15px;height:15px;fill:none;stroke:#e8b923;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vertical-align:-2px}
+.badge{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;color:var(--mut)}
+.search{flex:1;min-width:200px;display:flex;gap:8px}
+.search input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:9px 12px;font-size:14px;outline:none}
+.search input:focus{border-color:var(--acc)}
+.btn{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;padding:12px 0}
+.tab{padding:7px 13px;border-radius:8px;background:var(--panel);border:1px solid var(--line);color:var(--mut);cursor:pointer;font-weight:600;font-size:13px}
+.tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.tab.hero.on{background:#6b4bd6;border-color:#6b4bd6}
+.row-filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+select,.mini{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:13px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mut);font-size:12px;font-weight:600;background:var(--panel2)}
+tbody tr:hover{background:var(--panel2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.rank{font-weight:800;width:52px;text-align:center}
+.r1{color:var(--gold)}.r2{color:var(--silver)}.r3{color:var(--bronze)}
+.name{font-weight:700}
+.reg{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:2px}
+.wr{font-weight:700}.wrh{color:var(--win)}.wrl{color:var(--lose)}
+.pager{display:flex;gap:8px;align-items:center;justify-content:center;padding:14px}
+.pager button{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer}
+.pager button:disabled{opacity:.4;cursor:default}
+.muted{color:var(--mut)}
+/* profile */
+.pf-top{display:flex;gap:18px;align-items:center;padding:20px;flex-wrap:wrap}
+.pf-av{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--acc),#6b4bd6);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#fff}
+.pf-name{font-size:24px;font-weight:800}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;padding:0 16px 16px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat .k{font-size:12px;color:var(--mut)}
+.stat .v{font-size:20px;font-weight:800;margin-top:3px}
+.sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px}
+.sect-t .ic{color:var(--acc)}
+.pct{height:6px;background:var(--line);border-radius:4px;overflow:hidden;min-width:80px;display:inline-block;vertical-align:middle;width:90px}
+.pct>i{display:block;height:100%;background:var(--acc)}
+.chip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 9px;margin:3px;font-size:12px}
+.back{display:inline-block;margin:14px 0;color:var(--acc);font-weight:700}
+.empty{padding:40px;text-align:center;color:var(--mut)}
+footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
+</style>
+</head>
+<body>
+<header><div class="wrap hd">
+  <a class="logo" href="#/board/프로">
+    <svg class="emb" viewBox="0 0 32 32" fill="none">
+      <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#4a86ff"/><stop offset="1" stop-color="#8f6bff"/></linearGradient></defs>
+      <path d="M16 2.5 27.5 8.6v9.2c0 6.2-4.6 10.4-11.5 13.2C9.1 28.2 4.5 24 4.5 17.8V8.6L16 2.5Z"
+        fill="url(#lg)" fill-opacity="0.16" stroke="url(#lg)" stroke-width="1.6"/>
+      <circle cx="16" cy="15" r="5.4" stroke="url(#lg)" stroke-width="1.6"/>
+      <circle cx="16" cy="15" r="1.7" fill="url(#lg)"/>
+      <path d="M16 6.3v3.3M16 20.4v3.3M6.9 15h3.3M21.8 15h3.3" stroke="url(#lg)" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+    RS<span>.GG</span></a>
+  <span class="badge" id="seasonBadge">시즌</span>
+  <span class="owner" title="제작 · 운영">
+    <svg viewBox="0 0 24 24"><path d="M4 9l4 3 4-6 4 6 4-3-1.5 10H5.5L4 9Z"/><path d="M5.5 19h13"/></svg>
+    by <span class="mammon">MAMMON</span></span>
+  <div class="search">
+    <input id="q" placeholder="닉네임 검색 (예: earth, GG, レオ)" autocomplete="off">
+    <button class="btn" onclick="doSearch()">
+      <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg> 검색</button>
+  </div>
+</div></header>
+
+<div class="wrap" id="app"></div>
+<footer>
+  <div style="margin-bottom:6px">
+    <svg class="crown" viewBox="0 0 24 24"><path d="M4 9l4 3 4-6 4 6 4-3-1.5 10H5.5L4 9Z"/><path d="M5.5 19h13"/></svg>
+    Created &amp; owned by <span class="mammon" style="font-size:14px">MAMMON</span>
+  </div>
+  Ricochet Squad 비공식 전적검색 · 데이터 <span id="cnt"></span>명 · © 2026 MAMMON. All rights reserved.
+</footer>
+
+<script src="site_data.js"></script>
+<script>
+const D=window.DATA, P=D.players, B=D.boards, BM=D.board_meta;
+document.getElementById('seasonBadge').textContent='시즌 '+D.season.slice(0,4)+'-'+D.season.slice(4);
+document.getElementById('cnt').textContent=D.generated_count.toLocaleString();
+
+// 이름 검색 인덱스
+const NAMEIDX=[];
+for(const id in P) NAMEIDX.push([P[id].n.toLowerCase(), id]);
+
+const app=document.getElementById('app');
+const ICON={
+  trophy:'<svg class="ic" viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.7V17c0 .6-.5 1-1 1.2C7.9 18.8 7 20.2 7 22"/><path d="M14 14.7V17c0 .6.5 1 1 1.2C16.1 18.8 17 20.2 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>',
+  target:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4"/></svg>',
+  history:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg>',
+  refresh:'<svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v4h-4"/></svg>',
+};
+const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
+function medalCls(r){return r===1?'r1':r===2?'r2':r===3?'r3':''}
+
+let curBoard='프로', curPage=0, curRegion='', curFilter='';
+const PAGE=100;
+
+function tabsHtml(){
+  let modes=['프로','캐주얼'];
+  let h='<div class="tabs">';
+  for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${m}</div>`;
+  h+=`<select class="tab hero ${D.hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
+  h+=`<option value="">캐릭터별▾</option>`;
+  for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hl}</option>`;
+  h+='</select></div>';
+  return h;
+}
+
+function regionOptions(){
+  const set=new Set(); for(const id in P) if(P[id].r) set.add(P[id].r);
+  let h=`<select onchange="curRegion=this.value;curPage=0;render()"><option value="">전체 지역</option>`;
+  for(const r of [...set].sort()) h+=`<option value="${r}" ${curRegion===r?'selected':''}>${r}</option>`;
+  return h+'</select>';
+}
+
+function renderBoard(){
+  const ids=B[curBoard]||[];
+  let rows=ids.map((id,i)=>({id,rank:i+1}));
+  if(curRegion) rows=rows.filter(r=>P[r.id].r===curRegion);
+  if(curFilter){const f=curFilter.toLowerCase(); rows=rows.filter(r=>P[r.id].n.toLowerCase().includes(f));}
+  const total=rows.length, pages=Math.max(1,Math.ceil(total/PAGE));
+  if(curPage>=pages)curPage=0;
+  const slice=rows.slice(curPage*PAGE,curPage*PAGE+PAGE);
+  const size=BM[curBoard]?.size||ids.length;
+  let h=tabsHtml();
+  h+=`<div class="row-filter">${regionOptions()}
+    <input class="mini" placeholder="이 랭킹서 이름 찾기" value="${esc(curFilter)}" oninput="curFilter=this.value;curPage=0;render()" style="flex:1;min-width:140px">
+    <span class="muted">${curBoard} · 전체 ${size.toLocaleString()}명${curRegion?` · ${curRegion} ${total.toLocaleString()}명`:''}</span></div>`;
+  h+='<div class="card"><table><thead><tr><th class="rank">순위</th><th>닉네임</th><th class="num">점수</th><th class="num">승률</th><th class="num">레벨</th><th class="num">MVP</th></tr></thead><tbody>';
+  if(!slice.length) h+='<tr><td colspan="6" class="empty">결과 없음</td></tr>';
+  for(const r of slice){const p=P[r.id];const sc=(p.rk[curBoard]||[])[1];
+    h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}</td>
+      <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(p.r)}</span></td>
+      <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
+      <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td>
+      <td class="num">${p.lv??'-'}</td><td class="num">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;
+  }
+  h+='</tbody></table>';
+  h+=`<div class="pager"><button onclick="curPage=0;render()" ${curPage===0?'disabled':''}>«</button>
+    <button onclick="curPage--;render()" ${curPage===0?'disabled':''}>이전</button>
+    <span>${curPage+1} / ${pages}</span>
+    <button onclick="curPage++;render()" ${curPage>=pages-1?'disabled':''}>다음</button>
+    <button onclick="curPage=${pages-1};render()" ${curPage>=pages-1?'disabled':''}>»</button></div></div>`;
+  app.innerHTML=h;
+}
+
+function renderPlayer(id){
+  const p=P[id]; if(!p){app.innerHTML='<div class="empty">유저 없음</div>';return;}
+  const init=(p.n.trim()[0]||'?').toUpperCase();
+  let h=`<a class="back" onclick="history.back()">← 뒤로</a>`;
+  const liveBtn=window.LIVE?`<button class="btn" id="refreshBtn" onclick="refreshPlayer('${id}')" style="margin-left:auto">${ICON.refresh} 실시간 새로고침</button>`:'';
+  h+=`<div class="card"><div class="pf-top">
+    <div class="pf-av">${esc(init)}</div>
+    <div><div class="pf-name">${esc(p.n)}</div>
+    <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'} · <span class="mono">${id.slice(0,8)}…</span></div>
+    <div class="muted" id="freshInfo" style="font-size:11px"></div></div>
+    ${liveBtn}</div>`;
+  const fmt=n=>n!=null?n.toLocaleString():'-';
+  h+=`<div class="stat-grid">
+    <div class="stat"><div class="k">승률</div><div class="v ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</div></div>
+    <div class="stat"><div class="k">KD</div><div class="v">${p.kd??'-'}</div></div>
+    <div class="stat"><div class="k">킬 / 데스</div><div class="v" style="font-size:16px">${fmt(p.k)} / ${fmt(p.d)}</div></div>
+    <div class="stat"><div class="k">플레이 매치</div><div class="v">${fmt(p.m)}</div></div>
+    <div class="stat"><div class="k">승리</div><div class="v">${fmt(p.w)}</div></div>
+    <div class="stat"><div class="k">MVP</div><div class="v">${fmt(p.mvp)}</div></div>
+    <div class="stat"><div class="k">플레이시간</div><div class="v">${p.pt!=null?p.pt+'시':'-'}</div></div>
+    <div class="stat"><div class="k">총 데미지</div><div class="v" style="font-size:16px">${fmt(p.dmg)}</div></div>
+  </div></div>`;
+  // 랭킹 (모드 + 캐릭터)
+  const rk=p.rk||{};
+  const modeRows=['프로','캐주얼'].filter(m=>rk[m]);
+  const heroRows=D.hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
+  h+=`<div class="sect-t">${ICON.trophy} 랭킹 (시즌 ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card"><table>
+    <thead><tr><th>구분</th><th class="num">순위</th><th class="num">점수</th><th>상위 %</th></tr></thead><tbody>`;
+  const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
+    h+=`<tr><td>${isHero?ICON.target+' ':''}${lab}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
+      <td class="num">${score.toLocaleString()}</td>
+      <td><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
+  if(!modeRows.length&&!heroRows.length) h+='<tr><td colspan="4" class="empty">랭킹 기록 없음</td></tr>';
+  modeRows.forEach(m=>addRow(m,false));
+  heroRows.forEach(hl=>addRow(hl,true));
+  h+='</tbody></table></div>';
+  // 캐릭터별 상세 (레벨·플레이시간·레이팅·스킨)
+  const H=p.h||{};
+  const hero_list=Object.keys(H).filter(hn=>H[hn].lv!=null)
+    .sort((a,b)=>(H[b].pt||0)-(H[a].pt||0));
+  if(hero_list.length){
+    h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card"><table>';
+    h+='<thead><tr><th>캐릭터</th><th class="num">레벨</th><th class="num">플레이시간</th><th class="num">레이팅</th><th class="num">시즌순위</th><th>장착 스킨</th></tr></thead><tbody>';
+    for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':'-';
+      h+=`<tr><td class="name">${hn}</td>
+        <td class="num"><b>${hd.lv??'-'}</b></td>
+        <td class="num">${hd.pt!=null?hd.pt+'시':'-'}</td>
+        <td class="num">${hd.rt!=null?hd.rt.toLocaleString():'-'}</td>
+        <td class="num muted">${seasonRank}</td>
+        <td class="muted">${esc(hd.sk||'')}</td></tr>`;
+    }
+    h+='</tbody></table></div>';
+  }
+  // 최근 경기
+  h+='<div class="sect-t">'+ICON.history+' 최근 경기 <span id="matchInfo" class="muted" style="font-size:12px;font-weight:400"></span></div><div id="matchBox">';
+  if(p.matches&&p.matches.length){ h+=matchesHtml(p.matches); }
+  else if(window.LIVE){ h+='<div class="card"><div class="empty">위 <b>실시간 새로고침</b> 버튼을 누르면 최근 경기가 표시됩니다</div></div>'; }
+  else { h+='<div class="card"><div class="empty">최근 경기는 실시간 서버(서버 실행 시)에서만 조회됩니다</div></div>'; }
+  h+='</div>';
+  app.innerHTML=h; window.scrollTo(0,0);
+  // 실시간 모드면 경기 자동 로드 (한 번만)
+  if(window.LIVE && !p.matches && !p._tried){ p._tried=true; refreshPlayer(id); }
+}
+
+function matchesHtml(matches){
+  const typeName=t=>t===1?'프로':t===2?'캐주얼':'경기';
+  const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<3600)return Math.floor(s/60)+'분 전';if(s<86400)return Math.floor(s/3600)+'시간 전';return Math.floor(s/86400)+'일 전';};
+  let h='';
+  for(const m of matches){
+    const res=m.win?'<span style="color:var(--win);font-weight:800">승리</span>':'<span style="color:var(--lose);font-weight:800">패배</span>';
+    const t1=m.players.filter(x=>x.tm===1), t2=m.players.filter(x=>x.tm===2);
+    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}">${esc(x.h)} · ${esc(x.n)} <span class="muted">${x.mvp}</span></div>`).join('');
+    h+=`<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${m.win?'var(--win)':'var(--lose)'}">
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <div style="min-width:96px"><div>${res}</div><div class="muted" style="font-size:12px">${typeName(m.type)} · ${ago(m.ts)}</div>
+          <div class="muted" style="font-size:12px">내 캐릭: <b>${esc(m.myhero)}</b> · MVP ${m.mymvp}</div></div>
+        <div style="flex:1;min-width:150px;font-size:12px">${side(t1)}</div>
+        <div class="muted" style="font-weight:800">VS</div>
+        <div style="flex:1;min-width:150px;font-size:12px;text-align:right">${side(t2)}</div>
+      </div></div>`;
+  }
+  return h||'<div class="card"><div class="empty">경기 기록 없음</div></div>';
+}
+function renderSearch(q){
+  const f=q.toLowerCase();
+  let res=NAMEIDX.filter(([n])=>n.includes(f)).slice(0,300);
+  // 관련도: 정확일치 우선, 그다음 시작일치
+  res.sort((a,b)=>{const ax=a[0]===f?0:a[0].startsWith(f)?1:2, bx=b[0]===f?0:b[0].startsWith(f)?1:2;return ax-bx;});
+  let h=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색결과 ${res.length}명${res.length>=300?'+ (상위 300)':''}</div>`;
+  h+='<div class="card"><table><thead><tr><th>닉네임</th><th>지역</th><th class="num">승률</th><th class="num">레벨</th><th>최고 랭킹</th></tr></thead><tbody>';
+  if(!res.length) h+='<tr><td colspan="5" class="empty">결과 없음</td></tr>';
+  for(const [,id] of res){const p=P[id];
+    // 최고 랭킹 표시
+    let best='',bestRank=1e9;
+    for(const lab in p.rk){if(p.rk[lab][0]<bestRank){bestRank=p.rk[lab][0];best=lab+' '+p.rk[lab][0]+'위';}}
+    h+=`<tr onclick="goPlayer('${id}')"><td><span class="name">${esc(p.n)}</span></td><td class="muted">${esc(p.r)}</td>
+      <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td><td class="num">${p.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
+  }
+  h+='</tbody></table></div>';
+  app.innerHTML=h;
+}
+
+// 라우팅
+function goBoard(b){if(!b)return;curBoard=b;curPage=0;curFilter='';location.hash='#/board/'+encodeURIComponent(b);}
+function goPlayer(id){location.hash='#/player/'+id;}
+function doSearch(){const q=document.getElementById('q').value.trim();if(q)location.hash='#/search/'+encodeURIComponent(q);}
+document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+
+function render(){
+  const h=decodeURIComponent(location.hash||'');
+  if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
+  if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
+  if(h.startsWith('#/board/')){curBoard=h.slice(8)||'프로';}
+  renderBoard();
+}
+window.addEventListener('hashchange',render);
+
+// 실시간 새로고침 (백엔드 서버가 있을 때만)
+window.LIVE=false;
+async function refreshPlayer(id){
+  const btn=document.getElementById('refreshBtn'); if(btn){btn.disabled=true;btn.textContent='조회중…';}
+  try{
+    const r=await fetch('/api/player/'+id); const j=await r.json();
+    if(j.ok&&j.player){ P[id]=Object.assign(P[id]||{},j.player); renderPlayer(id);
+      const fi=document.getElementById('freshInfo'); if(fi) fi.textContent='방금 실시간 갱신됨 ✓';
+    } else { if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' 실시간 새로고침';} alert('조회 실패'); }
+  }catch(e){ if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' 실시간 새로고침';} alert('서버 연결 실패: '+e); }
+}
+function timeAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<60)return s+'초 전';if(s<3600)return Math.floor(s/60)+'분 전';return Math.floor(s/3600)+'시간 전';}
+fetch('/api/status').then(r=>r.json()).then(st=>{
+  if(st&&st.live){ window.LIVE=true;
+    const b=document.getElementById('seasonBadge');
+    if(st.last_refresh) b.title='리더보드 갱신: '+timeAgo(st.last_refresh);
+    if(location.hash.startsWith('#/player/')) render(); // 버튼 노출 위해 재렌더
+  }
+}).catch(()=>{});
+
+if(!location.hash) location.hash='#/board/프로'; else render();
+</script>
+</body>
+</html>

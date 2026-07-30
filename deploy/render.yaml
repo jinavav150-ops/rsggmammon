@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: rs-gg
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python3 server.py"
+    envVars:
+      - key: RS_PID
+        sync: false
+      - key: RS_SEC
+        sync: false
