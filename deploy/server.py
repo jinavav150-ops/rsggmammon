@@ -6,7 +6,7 @@
 - /api/player/<id> : 그 유저를 게임서버에서 실시간 조회
 실행:  python3 server.py   →  브라우저에서 http://localhost:8000
 """
-import socket, struct, json, os, time, threading, http.server, urllib.parse
+import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
@@ -21,6 +21,7 @@ HEROES={"108140568":"Dread","80931949":"Khan","61223451":"Vector","631049":"Oni"
 "45850136":"Magnus","65893852":"Nova","91887043":"Fury"}
 REGION_KR={"ap-northeast-2":"한국","eu-central-1":"유럽","us-east-1":"미국동부",
 "us-west-2":"미국서부","ap-southeast-1":"싱가포르","ap-south-1":"인도"}
+LEVEL_KR={"85682979":"퍼시피카","34624828":"항구","57585175":"하늘공원","36077481":"균열 관측소","41172989":"용광로"}
 TN=json.load(open(os.path.join(DATA,"tech_names.json"),encoding="utf-8"))
 C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","kills":"85762499",
 "deaths":"85762505","damage":"85762483","heal":"85762489","double":"85768264","triple":"85768275",
@@ -75,6 +76,35 @@ def parse_acc(acc):
 LOCK=threading.Lock()
 CACHE={"boards":{},"board_meta":{},"board_labels":[],"hero_labels":[],
        "players":{},"player_ranks":{},"season":SEASON,"last_refresh":0}
+NAME_HIST={}
+# ── 닉네임 이력 자동 추적 (Upstash Redis, 무료) — 환경변수로 켜짐 ──
+UPSTASH_URL=os.environ.get("UPSTASH_URL","").rstrip("/")
+UPSTASH_TOKEN=os.environ.get("UPSTASH_TOKEN","")
+def redis_cmd(*args):
+    if not UPSTASH_URL or not UPSTASH_TOKEN: return None
+    try:
+        req=urllib.request.Request(UPSTASH_URL+"/",data=json.dumps(list(args)).encode(),
+            headers={"Authorization":"Bearer "+UPSTASH_TOKEN,"Content-Type":"application/json"})
+        with urllib.request.urlopen(req,timeout=6) as r:
+            return json.loads(r.read().decode()).get("result")
+    except Exception: return None
+def hist_track(pid,name):
+    # Redis 있으면 개명을 영구 기록(자동), 없으면 baseline만 반환
+    if not (UPSTASH_URL and UPSTASH_TOKEN) or not name:
+        return NAME_HIST.get(pid,{}).get("prev",[])
+    key="nh:"+pid; raw=redis_cmd("GET",key)
+    if raw:
+        try: rec=json.loads(raw)
+        except: rec={"cur":name,"prev":[]}
+    else:
+        base=NAME_HIST.get(pid,{}); rec={"cur":base.get("cur",name),"prev":list(base.get("prev",[]))}
+    if rec.get("cur")!=name:
+        old=rec.get("cur")
+        if old and old not in rec["prev"]: rec["prev"].insert(0,old)
+        rec["cur"]=name; redis_cmd("SET",key,json.dumps(rec,ensure_ascii=False))
+    elif not raw:
+        redis_cmd("SET",key,json.dumps(rec,ensure_ascii=False))
+    return rec.get("prev",[])
 
 def load_disk():
     try:
@@ -89,6 +119,14 @@ def load_disk():
                 CACHE["players"][pid]=to_compact_from_raw(v)
         print(f"플레이어 {len(CACHE['players'])}명 로드")
     except Exception as e: print("플레이어 로드 실패:",e)
+    try:
+        nh=json.load(open(os.path.join(DATA,"name_history.json"),encoding="utf-8"))
+        NAME_HIST.clear(); NAME_HIST.update(nh)
+        with LOCK:
+            for pid,rec in NAME_HIST.items():
+                if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+        print(f"닉네임 이력 {len(NAME_HIST)}명 로드")
+    except Exception as e: print("이름이력 로드 실패:",e)
 
 def to_compact_from_raw(v):
     heroes={}
@@ -170,7 +208,7 @@ def parse_matches(jsons, pid):
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
-            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"players":players})
+            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":LEVEL_KR.get(str(m.get("LevelId")),""),"dmg":me.get("Damage"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
     return out[:20]
 
@@ -199,7 +237,7 @@ def live_player(pid):
         if not acc: return None
         comp=parse_acc(acc)
         with LOCK: CACHE["players"][pid]=comp
-        comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
+        comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{}); comp2["prev"]=hist_track(pid, comp.get("n"))
         try:
             mh=(acc.get("match_state") or {}).get("match_history",[])
             comp2["matches"]=fetch_matches(s, mh, pid)
