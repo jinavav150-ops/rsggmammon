@@ -23,6 +23,8 @@ REGION_KR={"ap-northeast-2":"한국","eu-central-1":"유럽","us-east-1":"미국
 "us-west-2":"미국서부","ap-southeast-1":"싱가포르","ap-south-1":"인도"}
 LEVEL_KR={"85682979":"퍼시피카","34624828":"항구","57585175":"하늘공원","36077481":"균열 관측소","41172989":"용광로"}
 TN=json.load(open(os.path.join(DATA,"tech_names.json"),encoding="utf-8"))
+try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8"))
+except Exception: PERK_KR={}
 C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","kills":"85762499",
 "deaths":"85762505","damage":"85762483","heal":"85762489","double":"85768264","triple":"85768275",
 "final":"85762019","fire":"85842040","playtime":"85762515","pro_rating":"111239832",
@@ -54,6 +56,15 @@ def skin_name(v):
     nm=TN.get(str(v))
     if not nm: return None
     p=nm.split("_"); return " ".join(p[2:]) if len(p)>2 else nm
+def perk_list(hv):
+    """장착 퍽을 슬롯 순서대로 한글명 리스트로. (퍽은 counter가 아니라 perk_slots에 있음)"""
+    slots=hv.get("perk_slots") or {}
+    out=[]
+    for sid in sorted(slots, key=lambda x: int(x) if str(x).isdigit() else 0):
+        p=(slots.get(sid) or {}).get("selected_perk_id")
+        if not p: continue
+        out.append(PERK_KR.get(str(p)) or f"#{p}")
+    return out
 def parse_acc(acc):
     cc=(acc.get("counters_state") or {}).get("counter_collection",{})
     g=lambda k:(cc.get(k,{}) or {}).get("value")
@@ -63,7 +74,7 @@ def parse_acc(acc):
         hcc=hv.get("counter_collection",{}); hg=lambda kk:(hcc.get(kk,{}) or {}).get("value")
         hpt=hg(H_PT)
         heroes[HEROES.get(hid,hid)]={"lv":hv.get("level"),"pt":round(hpt/3600,1) if isinstance(hpt,int) else None,
-            "rt":hg(H_RT),"pre":hg(H_PRE),"sk":skin_name(hg(H_SKIN))}
+            "rt":hg(H_RT),"pre":hg(H_PRE),"sk":skin_name(hg(H_SKIN)),"pk":perk_list(hv)}
     regs=acc.get("regions") or []
     return {"n":(acc.get("player_state") or {}).get("name",""),"r":REGION_KR.get(regs[0],regs[0]) if regs else "",
         "lv":g(C["level"]),"wr":round(wins/m*100,1) if (isinstance(wins,int) and isinstance(m,int) and m) else None,
@@ -137,7 +148,8 @@ def load_disk():
 def to_compact_from_raw(v):
     heroes={}
     for hn,hd in (v.get("heroes") or {}).items():
-        heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin")}
+        heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin"),
+            "pk":[PERK_KR.get(str(x)) or f"#{x}" for x in (hd.get("pk") or [])]}
     return {"n":v.get("name",""),"r":v.get("region",""),"lv":v.get("level"),"wr":v.get("winrate"),
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
         "d":v.get("deaths"),"dmg":v.get("damage"),"heal":v.get("heal"),"db":v.get("double"),
