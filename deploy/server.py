@@ -57,6 +57,13 @@ def skin_name(v):
     nm=TN.get(str(v))
     if not nm: return None
     p=nm.split("_"); return " ".join(p[2:]) if len(p)>2 else nm
+# 퍽 슬롯 표시 순서: 능력1 → 능력2 → 얼티밋 → 무기 (게임 해금 순서와 같음)
+# ⚠️ 슬롯 ID 숫자순으로 정렬하면 무기가 맨 앞으로 와서 게임과 달라진다.
+SLOT_ORDER=["48961378","48961386","48961396","48961367"]
+PERK_RANK={pid:(v[3] if isinstance(v,list) and len(v)>3 else 9) for pid,v in PERK_KR.items()}
+def perk_sorted(ids):
+    """퍽 ID 목록을 게임 표시 순서대로."""
+    return sorted(ids, key=lambda x: PERK_RANK.get(str(x), 9))
 def perk_of(pid):
     """퍽ID → [한글이름, 분류(0~8), 능력아이콘]. 옛 형식(문자열/2칸)도 동작."""
     v=PERK_KR.get(str(pid))
@@ -67,7 +74,7 @@ def perk_list(hv):
     """장착 퍽을 슬롯 순서대로 한글명 리스트로. (퍽은 counter가 아니라 perk_slots에 있음)"""
     slots=hv.get("perk_slots") or {}
     out=[]
-    for sid in sorted(slots, key=lambda x: int(x) if str(x).isdigit() else 0):
+    for sid in sorted(slots, key=lambda x: SLOT_ORDER.index(str(x)) if str(x) in SLOT_ORDER else 9):
         p=(slots.get(sid) or {}).get("selected_perk_id")
         if not p: continue
         out.append(int(p))
@@ -156,7 +163,7 @@ def to_compact_from_raw(v):
     heroes={}
     for hn,hd in (v.get("heroes") or {}).items():
         heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin"),
-            "pk":[int(x) for x in (hd.get("pk") or [])]}
+            "pk":perk_sorted(int(x) for x in (hd.get("pk") or []))}
     reg=v.get("region","");  reg=REGION_REV.get(reg,reg)   # 옛 스냅샷은 한글로 저장돼 있음
     return {"n":v.get("name",""),"r":reg,"lv":v.get("level"),"wr":v.get("winrate"),
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
@@ -270,7 +277,7 @@ def match_perks(pr):
     """그 경기에 실제로 사용한 퍽. 한 경기에서 캐릭터를 바꿨으면 캐릭터별로 나온다."""
     out=[]
     for hr in (pr.get("HeroResultData") or []):
-        names=[int(x) for x in (hr.get("Perks") or []) if x]
+        names=perk_sorted(int(x) for x in (hr.get("Perks") or []) if x)
         if names: out.append({"h":hero_name(hr.get("HeroId")),"pk":names})
     return out
 def parse_matches(jsons, pid):
@@ -283,6 +290,7 @@ def parse_matches(jsons, pid):
         if not me: continue
         players=[{"id":p.get("PlayerId"),"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
                   "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),
+                  "dmg":p.get("Damage"),   # 그 경기 그 선수의 딜량 (게임 결과창에도 나오는 값)
                   "mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid,"hp":match_perks(p)}
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
