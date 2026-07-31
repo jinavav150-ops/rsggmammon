@@ -26,6 +26,8 @@ LEVEL_KR={"85682979":"퍼시피카","34624828":"항구","57585175":"하늘공원
 TN=json.load(open(os.path.join(DATA,"tech_names.json"),encoding="utf-8"))
 try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8"))
 except Exception: PERK_KR={}
+try: COMPS=json.load(open(os.path.join(DATA,"comps.json"),encoding="utf-8"))
+except Exception: COMPS={}   # 없으면 조합 탭이 안 나올 뿐, 나머지는 정상
 C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","kills":"85762499",
 "deaths":"85762505","damage":"85762483","heal":"85762489","double":"85768264","triple":"85768275",
 "final":"85762019","fire":"85842040","playtime":"85762515","pro_rating":"111239832",
@@ -216,7 +218,7 @@ def build_site_data():
         for pid,v in PERK_KR.items():
             if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
             elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
-        out={"perk_meta":pmeta,"season":CACHE["season"],"board_labels":CACHE["board_labels"],"hero_labels":CACHE["hero_labels"],
+        out={"perk_meta":pmeta,"comps":COMPS,"season":CACHE["season"],"board_labels":CACHE["board_labels"],"hero_labels":CACHE["hero_labels"],
             "board_meta":CACHE["board_meta"],"boards":CACHE["boards"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     with open(os.path.join(HERE,"site_data.js"),"w",encoding="utf-8") as f:

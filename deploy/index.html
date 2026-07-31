@@ -142,6 +142,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   .sect-t{font-size:14px} #matchInfo{flex:1 0 100%;margin-left:0}
   .mtab th,.mtab td{padding:6px 4px}
   .rb{padding:2px 6px;font-size:11.5px} .mvpb{font-size:9px;padding:2px 4px}}
+.comp{display:flex;align-items:center;gap:3px}
+.comp img{width:30px;height:36px;border-radius:6px;object-fit:cover;background:var(--panel2)}
+.comp b{font-weight:700;margin-left:6px;white-space:nowrap}
+.bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle;width:70px}
+.bar>i{display:block;height:100%;background:var(--acc)}
+/* 좁은 화면: 이름을 숨기지 말고 아이콘 아래 줄로 */
+@media(max-width:600px){.comp{flex-wrap:wrap}
+  .comp img{width:26px;height:31px}
+  .comp b{flex-basis:100%;margin-left:0;font-size:10.5px;font-weight:600;white-space:normal;line-height:1.3}}
 .langsel{position:relative}
 .lbtn{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:20px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .lbtn:hover{border-color:var(--acc)}
@@ -311,6 +320,7 @@ function tabsHtml(){
   let modes=['pro','casual'];
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
+  if(D.comps&&D.comps.pro) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
   h+=`<select class="tab hero ${D.hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
   for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
@@ -323,6 +333,35 @@ function regionOptions(){
   let h=`<select onchange="curRegion=this.value;curPage=0;render()"><option value="">${t('all_regions')}</option>`;
   for(const r of [...set].sort()) h+=`<option value="${r}" ${curRegion===r?'selected':''}>${regionName(r)}</option>`;
   return h+'</select>';
+}
+
+// 3인 조합 순위. comps.json(로컬에서 미리 집계한 것)을 그대로 표로 그린다.
+let compMode='pro';
+window.setCompMode=m=>{compMode=m;render();};
+function renderComps(){
+  const C=D.comps||{};
+  let h=tabsHtml();
+  const has=k=>C[k]&&C[k].comps&&C[k].comps.length;
+  if(!has('pro')&&!has('casual')) { app.innerHTML=h+`<div class="card"><div class="empty">${t('comps_empty')}</div></div>`; return; }
+  if(!has(compMode)) compMode = has('pro')?'pro':'casual';
+  const d=C[compMode]||{comps:[],matches:0};
+  h+='<div class="tabs" style="margin-top:2px">';
+  for(const m of ['pro','casual'])
+    if(has(m)) h+=`<div class="tab ${compMode===m?'on':''}" onclick="setCompMode('${m}')">${boardLabel(m)}</div>`;
+  h+='</div>';
+  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:C.min_games||20})}</span></div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+  if(!d.comps.length) h+=`<tr><td colspan="5" class="empty">${t('comps_empty')}</td></tr>`;
+  const maxPick=Math.max(...d.comps.map(c=>c[4]),0.01);
+  d.comps.forEach((c,i)=>{
+    const heroes=c[0].split('+');
+    h+=`<tr><td class="rank ${medalCls(i+1)}">${i+1}</td>
+      <td><span class="comp">${heroes.map(x=>heroImg(x)).join('')}<b>${heroes.map(x=>hk(x)).join(' · ')}</b></span></td>
+      <td class="num wr ${wrClass(c[3])}">${c[3]}%</td>
+      <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/maxPick*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
+      <td class="num">${c[1].toLocaleString()}</td></tr>`;
+  });
+  app.innerHTML=h+'</tbody></table></div>';
 }
 
 function renderBoard(){
@@ -533,6 +572,7 @@ function render(){
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
+  if(curBoard==='comps') return renderComps();
   renderBoard();
 }
 window.addEventListener('hashchange',render);
