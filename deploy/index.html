@@ -7,7 +7,7 @@
 <style>
 :root{
   --bg:#0e1015; --panel:#171a21; --panel2:#1e2230; --line:#2a2f3d; --tx:#e8eaf0; --mut:#9aa3b2;
-  --acc:#4a86ff; --acc2:#7db1ff; --gold:#e8b923; --silver:#c4cdd8; --bronze:#cd8248;
+  --acc:#4a86ff; --acc2:#7db1ff; --gold:#e8b923; --silver:#a9b6c6; --bronze:#cd8248;
   --win:#3fb27f; --lose:#e06c75;
 }
 @media (prefers-color-scheme:light){
@@ -56,7 +56,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .muted{color:var(--mut)}
 /* profile */
 .pf-top{display:flex;gap:18px;align-items:center;padding:20px;flex-wrap:wrap}
-.pf-av{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--acc),#6b4bd6);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#fff}
+@media(max-width:600px){.pf-top{gap:12px;padding:16px} .pf-top>.btn{width:100%;margin-left:0!important;justify-content:center}}
+.pf-av{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--acc),#6b4bd6);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#fff;overflow:hidden;flex:0 0 auto;position:relative}
+.pf-av img{width:100%;height:100%;object-fit:cover;object-position:center top}
+.pf-av .mh{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#fff;font-size:9.5px;font-weight:700;text-align:center;padding:1px 0;letter-spacing:.2px}
 .pf-name{font-size:24px;font-weight:800}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;padding:0 16px 16px}
 .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -96,17 +99,29 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .hi{width:22px;height:26px;border-radius:5px;object-fit:cover;vertical-align:middle;margin-right:5px;background:var(--panel2)}
 .hi-lg{width:34px;height:40px;border-radius:7px}
 .hrow>div:first-child{flex:0 0 auto;display:flex;align-items:center;white-space:nowrap}
-.sbp{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:3px 0 8px 12px}
+.sbteam{flex:1 1 210px;min-width:0;max-width:560px;padding-left:9px;border-left:3px solid var(--line);border-radius:2px}
+.sbteam.ally{border-left-color:var(--win)}
+.sbteam.foe{border-left-color:var(--lose)}
+.sbhead{font-size:11px;margin-bottom:5px;font-weight:700}
+.sbl{display:flex;align-items:center;gap:8px;min-width:0}
+.sbl .sbn{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbl .sbmvp{flex:0 0 auto;font-size:9.5px;font-weight:800;color:#1a1a1a;background:var(--gold);border-radius:4px;padding:1px 4px;letter-spacing:.3px}
+.sbl .sbk{flex:0 0 auto;color:var(--mut);font-size:11.5px;font-variant-numeric:tabular-nums}
+.sbl.me{font-weight:800;color:var(--acc2)}
+.sbl.me .sbk{color:var(--acc2)}
+.sbp{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0 7px 27px}
 .sbp .hh{font-size:10.5px;color:var(--mut);font-weight:700;align-self:center}
 .pkb{width:31px;height:31px;padding:0;border:none;background:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
 .pkb img{width:100%;height:100%;object-fit:contain;pointer-events:none}
 .pkb:hover{filter:brightness(1.15) drop-shadow(0 0 4px rgba(255,255,255,.3))}
 .pkb:active{transform:scale(.93)}
-.pkb.sm{width:26px;height:26px}
+.pkb.sm{width:23px;height:23px}
 
 #perkTip{position:fixed;z-index:60;display:none;max-width:min(280px,88vw);background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:12.5px;line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.4)}
 /* 좁은 화면: 최근경기 덜 중요한 열 접기 */
-@media(max-width:600px){.mtab{min-width:0} .hcol{display:none} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
+.mmode{font-size:12px}
+@media(max-width:600px){.mtab{min-width:0} .hcol{display:none}
+  .mmode{display:block;font-size:10.5px;margin-top:2px} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </style>
 </head>
@@ -250,12 +265,16 @@ function renderPlayer(id){
     app.innerHTML='<div class="card"><div class="empty">유저 없음</div></div>'; return;
   }
   const init=(p.n.trim()[0]||'?').toUpperCase();
+  // 대표 캐릭터 = 플레이시간 1위 (아바타로 사용)
+  const mainHero=Object.entries(p.h||{}).filter(([,v])=>v.lv!=null)
+    .sort((a,b)=>(b[1].pt||0)-(a[1].pt||0))[0]?.[0];
+  const avatar=mainHero?`<img src="img/hero/${mainHero.toLowerCase()}.png" alt="" onerror="this.parentNode.textContent='${esc(init)}'"><span class="mh">${hk(mainHero)}</span>`:esc(init);
   let h=`<a class="back" onclick="history.back()">← 뒤로</a>`;
   const liveBtn=window.LIVE?`<button class="btn" id="refreshBtn" onclick="refreshPlayer('${id}')" style="margin-left:auto">${ICON.refresh} 실시간 새로고침</button>`:'';
   h+=`<div class="card"><div class="pf-top">
-    <div class="pf-av">${esc(init)}</div>
+    <div class="pf-av">${avatar}</div>
     <div><div class="pf-name">${esc(p.n)}</div>
-    <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'} · <span class="mono">${id.slice(0,8)}…</span></div>
+    <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'}${mainHero?' · 주 캐릭터 '+hk(mainHero):''}</div>
     ${p.prev&&p.prev.length?`<div style="font-size:12px;margin-top:4px"><span class="muted">이전 닉네임 </span>${p.prev.map(pn=>`<span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 0 0;color:var(--acc2);font-weight:600">${esc(pn)}</span>`).join('')}</div>`:''}
     <div class="muted" id="freshInfo" style="font-size:11px"></div></div>
     ${liveBtn}</div>`;
@@ -325,19 +344,19 @@ function matchesHtml(matches){
     h+=`<tr class="mrow ${cls}" onclick="toggleMatch(${i})">
       <td><div style="display:flex;align-items:center;gap:5px">${rb}${mvp}<span class="muted" style="font-variant-numeric:tabular-nums">${m.mys}-${m.ens}</span></div></td>
       <td class="hcell">${heroImg(m.myhero)}${esc(hk(m.myhero))}</td>
-      <td>${esc(m.map)||'-'} <span class="muted hcol">· ${typeName(m.type)} · ${dur(m.dur)}</span></td>
+      <td>${esc(m.map)||'-'}<span class="muted mmode"> · ${typeName(m.type)} · ${dur(m.dur)}</span></td>
       <td class="num">${m.myk??'-'} / ${m.myd??'-'}</td>
       <td class="num hcol">${num(m.dmg)}</td>
       <td class="num hcol">${num(m.myrt)}</td>
       <td class="muted">${ago(m.ts)}</td></tr>`;
     const perksOf=x=>(x.hp&&x.hp.length)?x.hp.map(g=>`<div class="sbp">${x.hp.length>1?`<span class="hh">${esc(hk(g.h))}</span>`:''}${perkChips(g.pk,1)}</div>`).join(''):'';
-    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
+    const side=arr=>arr.map(x=>`<div class="sbl${x.me?' me':''}"><span class="sbn">${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)}</span>${x.mv?'<span class="sbmvp">MVP</span>':''}<span class="sbk">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
     const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
-        <div style="flex:1;min-width:150px"><div style="font-size:11px;margin-bottom:4px"><span class="muted">우리 팀 · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
-        <div style="flex:1;min-width:150px"><div style="font-size:11px;margin-bottom:4px"><span class="muted">상대 팀 · </span><b>${m.ens}</b></div>${side(t2)}</div>
+        <div class="sbteam ally"><div class="sbhead"><span class="muted">우리 팀 · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
+        <div class="sbteam foe"><div class="sbhead"><span class="muted">상대 팀 · </span><b>${m.ens}</b></div>${side(t2)}</div>
       </div></td></tr>`;
   });
   return h+'</tbody></table></div>';

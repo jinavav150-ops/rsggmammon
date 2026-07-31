@@ -351,7 +351,8 @@ class H(http.server.BaseHTTPRequestHandler):
                             if mp is None: continue
                         p=CACHE["players"].get(pid,{})
                         res.append({"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
-                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":mp,"rk":p.get("rk",{})})
+                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":mp,
+                            "rk":CACHE["player_ranks"].get(pid,{})})   # 랭킹은 별도 캐시에 있음
                         if len(res)>=300: break
             return self._send(200,json.dumps({"results":res}))
         if path.startswith("/api/player/"):
