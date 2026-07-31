@@ -69,6 +69,19 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .chip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 9px;margin:3px;font-size:12px}
 .back{display:inline-block;margin:14px 0;color:var(--acc);font-weight:700}
 .empty{padding:40px;text-align:center;color:var(--mut)}
+/* 최근 경기 테이블 */
+.mtab{width:100%;border-collapse:collapse;font-size:13px;min-width:660px}
+.mtab th{color:var(--mut);font-size:11px;font-weight:700;letter-spacing:.4px;padding:10px 12px;text-align:left;background:var(--panel2);border-bottom:1px solid var(--line);white-space:nowrap}
+.mtab td{padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.mtab th.num,.mtab td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mrow{cursor:pointer;border-left:3px solid transparent;transition:background .1s}
+.mrow.win{border-left-color:var(--win)} .mrow.loss{border-left-color:var(--lose)}
+.mrow:hover{background:var(--panel2)}
+.rb{display:inline-block;font-weight:800;border-radius:5px;padding:2px 9px;font-size:12px;color:#fff}
+.rb.win{background:var(--win)} .rb.loss{background:var(--lose)}
+.mvpb{background:linear-gradient(90deg,#e0a90f,#ffd76b);color:#1a1a1a;font-weight:800;font-size:10px;border-radius:4px;padding:2px 5px}
+.hcell{font-weight:700}
+.mdet>td{background:var(--panel2);border-bottom:2px solid var(--line)}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </style>
 </head>
@@ -189,6 +202,7 @@ function renderPlayer(id){
     <div class="pf-av">${esc(init)}</div>
     <div><div class="pf-name">${esc(p.n)}</div>
     <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'} · <span class="mono">${id.slice(0,8)}…</span></div>
+    ${p.prev&&p.prev.length?`<div class="muted" style="font-size:12px">이전 닉네임: ${p.prev.map(esc).join(', ')}</div>`:''}
     <div class="muted" id="freshInfo" style="font-size:11px"></div></div>
     ${liveBtn}</div>`;
   const fmt=n=>n!=null?n.toLocaleString():'-';
@@ -245,34 +259,37 @@ function renderPlayer(id){
 }
 
 function matchesHtml(matches){
-  const typeName=t=>t===1?'프로':t===2?'캐주얼':'경기';
+  const typeName=t=>t===1?'프로':t===2?'캐주얼':'-';
   const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<3600)return Math.floor(s/60)+'분 전';if(s<86400)return Math.floor(s/3600)+'시간 전';return Math.floor(s/86400)+'일 전';};
   const dur=s=>s?Math.floor(s/60)+':'+String(s%60).padStart(2,'0'):'';
-  const kda=(k,d)=>`${k??0}/${d??0}`;
-  const crown='<span title="MVP" style="color:var(--gold)">👑</span>';
-  let h='';
-  for(const m of matches){
-    const col=m.win?'var(--win)':'var(--lose)';
-    const res=`<span style="color:${col};font-weight:800">${m.win?'승리':'패배'}</span>`;
-    const t1=m.players.filter(x=>x.tm===1), t2=m.players.filter(x=>x.tm===2);
-    const side=(arr,right)=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}${right?';text-align:right':''}">${x.mv?crown+' ':''}${esc(hk(x.h))} · ${esc(x.n)} <span class="muted">${kda(x.k,x.d)}</span></div>`).join('');
-    const mvpBadge=m.mvpme?` <span style="background:var(--gold);color:#000;font-weight:800;font-size:11px;border-radius:5px;padding:1px 6px">MVP</span>`:'';
-    h+=`<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${col}">
-      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <div style="min-width:104px">
-          <div>${res}${mvpBadge}</div>
-          <div style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">${m.mys} : ${m.ens}</div>
-          <div class="muted" style="font-size:12px">${typeName(m.type)} · ${dur(m.dur)}</div>
-          <div class="muted" style="font-size:12px">${ago(m.ts)}</div>
-          <div class="muted" style="font-size:12px">내 캐릭 <b>${esc(hk(m.myhero))}</b><br>KDA ${kda(m.myk,m.myd)} · MVP ${m.mymvp}</div>
-        </div>
-        <div style="flex:1;min-width:150px;font-size:12px">${side(t1,false)}</div>
-        <div class="muted" style="font-weight:800">VS</div>
-        <div style="flex:1;min-width:150px;font-size:12px">${side(t2,true)}</div>
-      </div></div>`;
-  }
-  return h||'<div class="card"><div class="empty">경기 기록 없음</div></div>';
+  const num=n=>n!=null?n.toLocaleString():'-';
+  if(!matches||!matches.length) return '<div class="card"><div class="empty">경기 기록 없음</div></div>';
+  let h='<div class="card" style="overflow-x:auto"><table class="mtab"><thead><tr>'
+    +'<th>결과</th><th>캐릭터</th><th>맵 · 모드</th><th class="num">킬</th><th class="num">데스</th><th class="num">데미지</th><th class="num">레이팅</th><th>시간</th></tr></thead><tbody>';
+  matches.forEach((m,i)=>{
+    const cls=m.win?'win':'loss';
+    const rb=`<span class="rb ${cls}">${m.win?'승':'패'}</span>`;
+    const mvp=m.mvpme?'<span class="mvpb">MVP</span>':'';
+    h+=`<tr class="mrow ${cls}" onclick="toggleMatch(${i})">
+      <td><div style="display:flex;align-items:center;gap:5px">${rb}${mvp}<span class="muted" style="font-variant-numeric:tabular-nums">${m.mys}-${m.ens}</span></div></td>
+      <td class="hcell">${esc(hk(m.myhero))}</td>
+      <td>${esc(m.map)||'-'} <span class="muted">· ${typeName(m.type)} · ${dur(m.dur)}</span></td>
+      <td class="num">${m.myk??'-'}</td>
+      <td class="num">${m.myd??'-'}</td>
+      <td class="num">${num(m.dmg)}</td>
+      <td class="num">${num(m.myrt)}</td>
+      <td class="muted">${ago(m.ts)}</td></tr>`;
+    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${esc(hk(x.h))} · ${esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>`).join('');
+    const t1=m.players.filter(x=>x.tm===1),t2=m.players.filter(x=>x.tm===2);
+    h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
+        <div style="flex:1;min-width:150px"><div class="muted" style="font-size:11px;margin-bottom:4px">팀 1</div>${side(t1)}</div>
+        <div style="flex:1;min-width:150px"><div class="muted" style="font-size:11px;margin-bottom:4px">팀 2</div>${side(t2)}</div>
+      </div></td></tr>`;
+  });
+  return h+'</tbody></table></div>';
 }
+window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
 function renderSearch(q){
   const f=q.toLowerCase();
   let res=NAMEIDX.filter(([n])=>n.includes(f)).slice(0,300);
