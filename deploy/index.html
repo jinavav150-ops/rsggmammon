@@ -122,6 +122,8 @@ const ICON={
   history:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg>',
   refresh:'<svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v4h-4"/></svg>',
 };
+const HERO_KR={Dread:"드레드",Khan:"칸",Vector:"벡터",Oni:"오니",Remedy:"레메디",Sejin:"세진",Twinkle:"트윙클",Jagger:"재거",Calibri:"칼리브리",Leo:"레오",Magnus:"망누스",Nova:"노바",Fury:"퓨리"};
+const hk=n=>HERO_KR[n]||n;  // 캐릭명만 한글로 (닉네임 등은 원본 유지)
 const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
 function medalCls(r){return r===1?'r1':r===2?'r2':r===3?'r3':''}
@@ -135,7 +137,7 @@ function tabsHtml(){
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${m}</div>`;
   h+=`<select class="tab hero ${D.hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">캐릭터별▾</option>`;
-  for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hl}</option>`;
+  for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
   h+='</select></div>';
   return h;
 }
@@ -159,7 +161,7 @@ function renderBoard(){
   let h=tabsHtml();
   h+=`<div class="row-filter">${regionOptions()}
     <input class="mini" placeholder="이 랭킹서 이름 찾기" value="${esc(curFilter)}" oninput="curFilter=this.value;curPage=0;render()" style="flex:1;min-width:140px">
-    <span class="muted">${curBoard} · 전체 ${size.toLocaleString()}명${curRegion?` · ${curRegion} ${total.toLocaleString()}명`:''}</span></div>`;
+    <span class="muted">${hk(curBoard)} · 전체 ${size.toLocaleString()}명${curRegion?` · ${curRegion} ${total.toLocaleString()}명`:''}</span></div>`;
   h+='<div class="card"><table><thead><tr><th class="rank">순위</th><th>닉네임</th><th class="num">점수</th><th class="num">승률</th><th class="num">레벨</th><th class="num">MVP</th></tr></thead><tbody>';
   if(!slice.length) h+='<tr><td colspan="6" class="empty">결과 없음</td></tr>';
   for(const r of slice){const p=P[r.id];const sc=(p.rk[curBoard]||[])[1];
@@ -207,7 +209,7 @@ function renderPlayer(id){
   h+=`<div class="sect-t">${ICON.trophy} 랭킹 (시즌 ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card"><table>
     <thead><tr><th>구분</th><th class="num">순위</th><th class="num">점수</th><th>상위 %</th></tr></thead><tbody>`;
   const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
-    h+=`<tr><td>${isHero?ICON.target+' ':''}${lab}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
+    h+=`<tr><td>${isHero?ICON.target+' ':''}${isHero?hk(lab):lab}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
       <td class="num">${score.toLocaleString()}</td>
       <td><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
   if(!modeRows.length&&!heroRows.length) h+='<tr><td colspan="4" class="empty">랭킹 기록 없음</td></tr>';
@@ -222,7 +224,7 @@ function renderPlayer(id){
     h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card"><table>';
     h+='<thead><tr><th>캐릭터</th><th class="num">레벨</th><th class="num">플레이시간</th><th class="num">레이팅</th><th class="num">시즌순위</th><th>장착 스킨</th></tr></thead><tbody>';
     for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':'-';
-      h+=`<tr><td class="name">${hn}</td>
+      h+=`<tr><td class="name">${hk(hn)}</td>
         <td class="num"><b>${hd.lv??'-'}</b></td>
         <td class="num">${hd.pt!=null?hd.pt+'시':'-'}</td>
         <td class="num">${hd.rt!=null?hd.rt.toLocaleString():'-'}</td>
@@ -253,7 +255,7 @@ function matchesHtml(matches){
     const col=m.win?'var(--win)':'var(--lose)';
     const res=`<span style="color:${col};font-weight:800">${m.win?'승리':'패배'}</span>`;
     const t1=m.players.filter(x=>x.tm===1), t2=m.players.filter(x=>x.tm===2);
-    const side=(arr,right)=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}${right?';text-align:right':''}">${x.mv?crown+' ':''}${esc(x.h)} · ${esc(x.n)} <span class="muted">${kda(x.k,x.d)}</span></div>`).join('');
+    const side=(arr,right)=>arr.map(x=>`<div style="${x.me?'font-weight:800':''}${right?';text-align:right':''}">${x.mv?crown+' ':''}${esc(hk(x.h))} · ${esc(x.n)} <span class="muted">${kda(x.k,x.d)}</span></div>`).join('');
     const mvpBadge=m.mvpme?` <span style="background:var(--gold);color:#000;font-weight:800;font-size:11px;border-radius:5px;padding:1px 6px">MVP</span>`:'';
     h+=`<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid ${col}">
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -262,7 +264,7 @@ function matchesHtml(matches){
           <div style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">${m.mys} : ${m.ens}</div>
           <div class="muted" style="font-size:12px">${typeName(m.type)} · ${dur(m.dur)}</div>
           <div class="muted" style="font-size:12px">${ago(m.ts)}</div>
-          <div class="muted" style="font-size:12px">내 캐릭 <b>${esc(m.myhero)}</b><br>KDA ${kda(m.myk,m.myd)} · MVP ${m.mymvp}</div>
+          <div class="muted" style="font-size:12px">내 캐릭 <b>${esc(hk(m.myhero))}</b><br>KDA ${kda(m.myk,m.myd)} · MVP ${m.mymvp}</div>
         </div>
         <div style="flex:1;min-width:150px;font-size:12px">${side(t1,false)}</div>
         <div class="muted" style="font-weight:800">VS</div>
@@ -282,7 +284,7 @@ function renderSearch(q){
   for(const [,id] of res){const p=P[id];
     // 최고 랭킹 표시
     let best='',bestRank=1e9;
-    for(const lab in p.rk){if(p.rk[lab][0]<bestRank){bestRank=p.rk[lab][0];best=lab+' '+p.rk[lab][0]+'위';}}
+    for(const lab in p.rk){if(p.rk[lab][0]<bestRank){bestRank=p.rk[lab][0];best=hk(lab)+' '+p.rk[lab][0]+'위';}}
     h+=`<tr onclick="goPlayer('${id}')"><td><span class="name">${esc(p.n)}</span></td><td class="muted">${esc(p.r)}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td><td class="num">${p.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
   }
