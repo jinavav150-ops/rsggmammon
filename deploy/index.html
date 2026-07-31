@@ -98,12 +98,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .hrow>div:first-child{flex:0 0 auto;display:flex;align-items:center;white-space:nowrap}
 .sbp{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:3px 0 8px 12px}
 .sbp .hh{font-size:10.5px;color:var(--mut);font-weight:700;align-self:center}
-.pkb{width:30px;height:30px;padding:0;border:none;border-radius:7px;background:var(--c,#4a5060);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
-.pkb img{width:20px;height:20px;object-fit:contain;pointer-events:none}
-.pkb:hover{filter:brightness(1.2)}
+.pkb{width:31px;height:31px;padding:0;border:none;background:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.pkb img{width:100%;height:100%;object-fit:contain;pointer-events:none}
+.pkb:hover{filter:brightness(1.15) drop-shadow(0 0 4px rgba(255,255,255,.3))}
 .pkb:active{transform:scale(.93)}
-.pkb.sm{width:25px;height:25px;border-radius:6px}
-.pkb.sm img{width:17px;height:17px}
+.pkb.sm{width:26px;height:26px}
+
 #perkTip{position:fixed;z-index:60;display:none;max-width:min(280px,88vw);background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:12.5px;line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.4)}
 /* 좁은 화면: 최근경기 덜 중요한 열 접기 */
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
@@ -170,15 +170,11 @@ const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
 function heroImg(n,cls){const f=String(n||'').toLowerCase();if(!f||f[0]==='#')return '';
   return `<img class="hi ${cls||''}" src="img/hero/${f}.png" alt="" loading="lazy" onerror="this.style.display='none'">`;}
-// 퍽 분류(0~8) → 게임 아이콘 + 게임 색상
-const PERK_ICON=['damage','survival','timings','movement','size','amount1','cooldown','amount2','amount3'];
-const PERK_COLOR=['#a8280f','#0d8e6c','#7b32ef','#356fb4','#b56d2e','#20a099','#b08c1d','#20a099','#20a099'];
+// 퍽 = 게임의 육각 배지. 분류(type 0~8)가 곧 배지 그림
 function perkChips(arr,sm){return (arr||[]).map(p=>{
   const a=Array.isArray(p); const n=a?p[0]:p;
-  const t=(a&&p[1]>=0&&p[1]<PERK_ICON.length)?p[1]:0;
-  const ic=a&&p[2];   // 능력 아이콘(진짜 게임 아이콘). 없으면 분류 아이콘으로 대체
-  const src=ic?`img/ability/${ic}.png`:`img/perk/${PERK_ICON[t]}.png`;
-  return `<button type="button" class="pkb${sm?' sm':''}" style="--c:${PERK_COLOR[t]}" data-t="${esc(n)}" title="${esc(n)}" onclick="showPerk(event,this)"><img src="${src}" alt=""></button>`;
+  const t=(a&&p[1]>=0&&p[1]<=8)?p[1]:0;
+  return `<button type="button" class="pkb${sm?' sm':''}" data-t="${esc(n)}" title="${esc(n)}" onclick="showPerk(event,this)"><img src="img/perk/${t}.png" alt=""></button>`;
 }).join('');}
 window.showPerk=(ev,el)=>{ev.stopPropagation();const tip=document.getElementById('perkTip');
   if(tip.style.display==='block'&&tip._el===el){tip.style.display='none';return;}
