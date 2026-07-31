@@ -82,6 +82,17 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mvpb{background:linear-gradient(90deg,#e0a90f,#ffd76b);color:#1a1a1a;font-weight:800;font-size:10px;border-radius:4px;padding:2px 5px}
 .hcell{font-weight:700}
 .mdet>td{background:var(--panel2);border-bottom:2px solid var(--line)}
+.plink{color:var(--acc2);cursor:pointer;font-weight:600}
+.plink:hover{text-decoration:underline}
+/* 캐릭터별 상세 카드형 목록 (모바일 대응) */
+.hrow{display:flex;justify-content:space-between;align-items:center;gap:6px 14px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.hrow:last-child{border-bottom:none}
+.hrow .hn{font-weight:700}
+.hrow .lv{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:0 6px;font-size:11px;color:var(--mut);margin-left:5px;font-weight:600}
+.hrow .hm{color:var(--mut);font-size:12.5px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.hrow .hm b{color:var(--tx);font-weight:700}
+/* 좁은 화면: 최근경기 덜 중요한 열 접기 */
+@media(max-width:600px){.mtab{min-width:0} .hcol{display:none} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </style>
 </head>
@@ -197,7 +208,14 @@ function renderBoard(){
 }
 
 function renderPlayer(id){
-  const p=P[id]; if(!p){app.innerHTML='<div class="empty">유저 없음</div>';return;}
+  const p=P[id];
+  if(!p){
+    if(window.LIVE){ app.innerHTML='<div class="card"><div class="empty">불러오는 중…</div></div>';
+      fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json()).then(j=>{ if(j.ok&&j.player){P[id]=j.player; if(location.hash==='#/player/'+id) renderPlayer(id);} else app.innerHTML='<div class="card"><div class="empty">유저 없음</div></div>'; }).catch(()=>{app.innerHTML='<div class="card"><div class="empty">불러오기 실패</div></div>';});
+      return;
+    }
+    app.innerHTML='<div class="card"><div class="empty">유저 없음</div></div>'; return;
+  }
   const init=(p.n.trim()[0]||'?').toUpperCase();
   let h=`<a class="back" onclick="history.back()">← 뒤로</a>`;
   const liveBtn=window.LIVE?`<button class="btn" id="refreshBtn" onclick="refreshPlayer('${id}')" style="margin-left:auto">${ICON.refresh} 실시간 새로고침</button>`:'';
@@ -205,7 +223,7 @@ function renderPlayer(id){
     <div class="pf-av">${esc(init)}</div>
     <div><div class="pf-name">${esc(p.n)}</div>
     <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'} · <span class="mono">${id.slice(0,8)}…</span></div>
-    ${p.prev&&p.prev.length?`<div class="muted" style="font-size:12px">이전 닉네임: ${p.prev.map(esc).join(', ')}</div>`:''}
+    ${p.prev&&p.prev.length?`<div style="font-size:12px;margin-top:4px"><span class="muted">이전 닉네임 </span>${p.prev.map(pn=>`<span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 0 0;color:var(--acc2);font-weight:600">${esc(pn)}</span>`).join('')}</div>`:''}
     <div class="muted" id="freshInfo" style="font-size:11px"></div></div>
     ${liveBtn}</div>`;
   const fmt=n=>n!=null?n.toLocaleString():'-';
@@ -224,11 +242,11 @@ function renderPlayer(id){
   const modeRows=['프로','캐주얼'].filter(m=>rk[m]);
   const heroRows=D.hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
   h+=`<div class="sect-t">${ICON.trophy} 랭킹 (시즌 ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card" style="overflow-x:auto"><table>
-    <thead><tr><th>구분</th><th class="num">순위</th><th class="num">점수</th><th>상위 %</th></tr></thead><tbody>`;
+    <thead><tr><th>구분</th><th class="num">순위</th><th class="num">점수</th><th class="hcol">상위 %</th></tr></thead><tbody>`;
   const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
     h+=`<tr><td>${isHero?ICON.target+' ':''}${isHero?hk(lab):lab}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
       <td class="num">${score.toLocaleString()}</td>
-      <td><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
+      <td class="hcol"><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
   if(!modeRows.length&&!heroRows.length) h+='<tr><td colspan="4" class="empty">랭킹 기록 없음</td></tr>';
   modeRows.forEach(m=>addRow(m,false));
   heroRows.forEach(hl=>addRow(hl,true));
@@ -238,17 +256,14 @@ function renderPlayer(id){
   const hero_list=Object.keys(H).filter(hn=>H[hn].lv!=null)
     .sort((a,b)=>(H[b].pt||0)-(H[a].pt||0));
   if(hero_list.length){
-    h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card" style="overflow-x:auto"><table>';
-    h+='<thead><tr><th>캐릭터</th><th class="num">레벨</th><th class="num">플레이시간</th><th class="num">레이팅</th><th class="num">시즌순위</th><th>장착 스킨</th></tr></thead><tbody>';
-    for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':'-';
-      h+=`<tr><td class="name">${hk(hn)}</td>
-        <td class="num"><b>${hd.lv??'-'}</b></td>
-        <td class="num">${hd.pt!=null?hd.pt+'시':'-'}</td>
-        <td class="num">${hd.rt!=null?hd.rt.toLocaleString():'-'}</td>
-        <td class="num muted">${seasonRank}</td>
-        <td class="muted">${esc(hd.sk||'')}</td></tr>`;
+    h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card">';
+    for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':null;
+      h+=`<div class="hrow">
+        <div><span class="hn">${hk(hn)}</span><span class="lv">Lv.${hd.lv??'-'}</span></div>
+        <div class="hm"><span>⏱ ${hd.pt!=null?hd.pt+'시':'-'}</span><span>레이팅 <b>${hd.rt!=null?hd.rt.toLocaleString():'-'}</b></span>${seasonRank?`<span>시즌 ${seasonRank}</span>`:''}${hd.sk?`<span>🎨 ${esc(hd.sk)}</span>`:''}</div>
+      </div>`;
     }
-    h+='</tbody></table></div>';
+    h+='</div>';
   }
   // 최근 경기
   h+='<div class="sect-t">'+ICON.history+' 최근 경기 <span id="matchInfo" class="muted" style="font-size:12px;font-weight:400"></span></div><div id="matchBox">';
@@ -268,7 +283,7 @@ function matchesHtml(matches){
   const num=n=>n!=null?n.toLocaleString():'-';
   if(!matches||!matches.length) return '<div class="card"><div class="empty">경기 기록 없음</div></div>';
   let h='<div class="card" style="overflow-x:auto"><table class="mtab"><thead><tr>'
-    +'<th>결과</th><th>캐릭터</th><th>맵 · 모드</th><th class="num">킬</th><th class="num">데스</th><th class="num">데미지</th><th class="num">레이팅</th><th>시간</th></tr></thead><tbody>';
+    +'<th>결과</th><th>캐릭터</th><th>맵 · 모드</th><th class="num">K / D</th><th class="num hcol">데미지</th><th class="num hcol">레이팅</th><th>시간</th></tr></thead><tbody>';
   matches.forEach((m,i)=>{
     const cls=m.win?'win':'loss';
     const rb=`<span class="rb ${cls}">${m.win?'승':'패'}</span>`;
@@ -276,13 +291,12 @@ function matchesHtml(matches){
     h+=`<tr class="mrow ${cls}" onclick="toggleMatch(${i})">
       <td><div style="display:flex;align-items:center;gap:5px">${rb}${mvp}<span class="muted" style="font-variant-numeric:tabular-nums">${m.mys}-${m.ens}</span></div></td>
       <td class="hcell">${esc(hk(m.myhero))}</td>
-      <td>${esc(m.map)||'-'} <span class="muted">· ${typeName(m.type)} · ${dur(m.dur)}</span></td>
-      <td class="num">${m.myk??'-'}</td>
-      <td class="num">${m.myd??'-'}</td>
-      <td class="num">${num(m.dmg)}</td>
-      <td class="num">${num(m.myrt)}</td>
+      <td>${esc(m.map)||'-'} <span class="muted hcol">· ${typeName(m.type)} · ${dur(m.dur)}</span></td>
+      <td class="num">${m.myk??'-'} / ${m.myd??'-'}</td>
+      <td class="num hcol">${num(m.dmg)}</td>
+      <td class="num hcol">${num(m.myrt)}</td>
       <td class="muted">${ago(m.ts)}</td></tr>`;
-    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${esc(hk(x.h))} · ${esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>`).join('');
+    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>`).join('');
     const t1=m.players.filter(x=>x.tm===1),t2=m.players.filter(x=>x.tm===2);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
@@ -293,28 +307,36 @@ function matchesHtml(matches){
   return h+'</tbody></table></div>';
 }
 window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
-function renderSearch(q){
+function searchRow(it){
+  let best='',bestRank=1e9; const rk=it.rk||{};
+  for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=hk(lab)+' '+rk[lab][0]+'위';}}
+  const prevTag=it.prevMatch?`<div class="muted" style="font-size:11px">↳ 옛 닉네임 <b>${esc(it.prevMatch)}</b> → 지금 <b>${esc(it.n)}</b></div>`:'';
+  return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(it.r||'')}</td>`
+    +`<td class="num wr ${wrClass(it.wr)}">${it.wr!=null?it.wr+'%':'-'}</td><td class="num">${it.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
+}
+function renderSearchResults(q,items){
   const f=q.toLowerCase();
-  const byId={};
-  for(const [nm,id,prevName] of NAMEIDX){
-    if(!nm.includes(f)) continue;
-    if(!byId[id]) byId[id]={id,prevMatch:null};
-    if(prevName) byId[id].prevMatch=prevName;   // 이전 닉네임으로 매칭됨
-  }
-  let res=Object.values(byId).slice(0,300);
-  res.sort((a,b)=>{const rk=x=>{const n=P[x.id].n.toLowerCase();return n===f?0:n.startsWith(f)?1:(x.prevMatch?3:2);};return rk(a)-rk(b);});
-  let h=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색결과 ${res.length}명${res.length>=300?'+ (상위 300)':''}</div>`;
+  items.sort((a,b)=>{const rk=x=>{const n=(x.n||'').toLowerCase();return n===f?0:n.startsWith(f)?1:(x.prevMatch?3:2);};return rk(a)-rk(b);});
+  let h=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색결과 ${items.length}명${items.length>=300?'+ (상위 300)':''}</div>`;
   h+='<div class="card" style="overflow-x:auto"><table><thead><tr><th>닉네임</th><th>지역</th><th class="num">승률</th><th class="num">레벨</th><th>최고 랭킹</th></tr></thead><tbody>';
-  if(!res.length) h+='<tr><td colspan="5" class="empty">결과 없음</td></tr>';
-  for(const r of res){const p=P[r.id];
-    let best='',bestRank=1e9;
-    for(const lab in p.rk){if(p.rk[lab][0]<bestRank){bestRank=p.rk[lab][0];best=hk(lab)+' '+p.rk[lab][0]+'위';}}
-    const prevTag=r.prevMatch?`<div class="muted" style="font-size:11px">↳ 옛 닉네임 <b>${esc(r.prevMatch)}</b> → 지금 <b>${esc(p.n)}</b></div>`:'';
-    h+=`<tr onclick="goPlayer('${r.id}')"><td><span class="name">${esc(p.n)}</span>${prevTag}</td><td class="muted">${esc(p.r)}</td>
-      <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td><td class="num">${p.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
+  if(!items.length) h+='<tr><td colspan="5" class="empty">결과 없음</td></tr>';
+  for(const it of items) h+=searchRow(it);
+  h+='</tbody></table></div>'; app.innerHTML=h;
+}
+function clientSearch(q){
+  const f=q.toLowerCase(); const byId={};
+  for(const [nm,id,prevName] of NAMEIDX){ if(!nm.includes(f))continue; if(!byId[id])byId[id]={id,prevMatch:null}; if(prevName)byId[id].prevMatch=prevName; }
+  return Object.values(byId).slice(0,300).map(o=>{const p=P[o.id]||{};return {id:o.id,n:p.n,r:p.r,wr:p.wr,lv:p.lv,prevMatch:o.prevMatch,rk:p.rk};});
+}
+function renderSearch(q){
+  if(window.LIVE){   // 서버 실시간 검색 (개명 즉시 반영, 현재 닉네임으로 표시)
+    app.innerHTML=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색 중…</div>`;
+    fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json())
+      .then(j=>renderSearchResults(q,(j.results||[]).map(r=>({id:r.id,n:r.n,r:r.r,wr:r.wr,lv:r.lv,prevMatch:r.pm,rk:r.rk}))))
+      .catch(()=>renderSearchResults(q,clientSearch(q)));
+    return;
   }
-  h+='</tbody></table></div>';
-  app.innerHTML=h;
+  renderSearchResults(q,clientSearch(q));
 }
 
 // 라우팅

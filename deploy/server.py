@@ -249,8 +249,9 @@ def parse_matches(jsons, pid):
         prs=m.get("PlayerResults",[])
         me=next((p for p in prs if p.get("PlayerId")==pid),None)
         if not me: continue
-        players=[{"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
-                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),"mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid}
+        players=[{"id":p.get("PlayerId"),"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
+                  "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),
+                  "mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid}
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
@@ -310,6 +311,22 @@ class H(http.server.BaseHTTPRequestHandler):
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
                 "players":len(CACHE["players"]),"boards":len(CACHE["boards"]),"season":CACHE["season"]}
             return self._send(200,json.dumps(st))
+        if path=="/api/search":
+            qs=urllib.parse.parse_qs(u.query); q=(qs.get("q",[""])[0] or "").strip().lower()
+            res=[]
+            if q:
+                with LOCK:
+                    for pid,rec in NAME_HIST.items():
+                        cur=rec.get("cur") or ""; prevs=rec.get("prev",[])
+                        if q in cur.lower(): mp=None
+                        else:
+                            mp=next((pn for pn in prevs if pn and q in pn.lower()),None)
+                            if mp is None: continue
+                        p=CACHE["players"].get(pid,{})
+                        res.append({"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
+                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":mp,"rk":p.get("rk",{})})
+                        if len(res)>=300: break
+            return self._send(200,json.dumps({"results":res}))
         if path.startswith("/api/player/"):
             pid=urllib.parse.unquote(path[len("/api/player/"):])
             try:
