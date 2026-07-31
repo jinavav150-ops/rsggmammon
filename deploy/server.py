@@ -77,34 +77,44 @@ LOCK=threading.Lock()
 CACHE={"boards":{},"board_meta":{},"board_labels":[],"hero_labels":[],
        "players":{},"player_ranks":{},"season":SEASON,"last_refresh":0}
 NAME_HIST={}
-# ── 닉네임 이력 자동 추적 (Upstash Redis, 무료) — 환경변수로 켜짐 ──
+# ── 닉네임 이력 (Upstash Redis 단일키 저장 + 백그라운드 전원검사) ──
 UPSTASH_URL=os.environ.get("UPSTASH_URL","").rstrip("/")
 UPSTASH_TOKEN=os.environ.get("UPSTASH_TOKEN","")
+HIST_KEY="rsgg:namehist"
+SWEEP_SEC=int(os.environ.get("SWEEP_SEC","21600"))  # 전원 이름검사 주기(기본 6시간)
 def redis_cmd(*args):
     if not UPSTASH_URL or not UPSTASH_TOKEN: return None
     try:
         req=urllib.request.Request(UPSTASH_URL+"/",data=json.dumps(list(args)).encode(),
             headers={"Authorization":"Bearer "+UPSTASH_TOKEN,"Content-Type":"application/json"})
-        with urllib.request.urlopen(req,timeout=6) as r:
+        with urllib.request.urlopen(req,timeout=8) as r:
             return json.loads(r.read().decode()).get("result")
     except Exception: return None
-def hist_track(pid,name):
-    # Redis 있으면 개명을 영구 기록(자동), 없으면 baseline만 반환
-    if not (UPSTASH_URL and UPSTASH_TOKEN) or not name:
-        return NAME_HIST.get(pid,{}).get("prev",[])
-    key="nh:"+pid; raw=redis_cmd("GET",key)
+def hist_load():
+    raw=redis_cmd("GET",HIST_KEY)
     if raw:
-        try: rec=json.loads(raw)
-        except: rec={"cur":name,"prev":[]}
-    else:
-        base=NAME_HIST.get(pid,{}); rec={"cur":base.get("cur",name),"prev":list(base.get("prev",[]))}
+        try:
+            d=json.loads(raw); NAME_HIST.clear(); NAME_HIST.update(d)
+            print(f"이름이력 Redis 로드 {len(NAME_HIST)}명"); return
+        except Exception: pass
+    try:
+        d=json.load(open(os.path.join(DATA,"name_history.json"),encoding="utf-8"))
+        NAME_HIST.clear(); NAME_HIST.update(d); print(f"이름이력 baseline 로드 {len(NAME_HIST)}명")
+    except Exception as e: print("이름이력 로드 실패:",e)
+def hist_save():
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        redis_cmd("SET",HIST_KEY,json.dumps(NAME_HIST,ensure_ascii=False))
+def hist_observe(pid,name):
+    # 이름 관측 → 개명 감지시 기록. 반환 (prev리스트, 변경여부)
+    if not name: return NAME_HIST.get(pid,{}).get("prev",[]), False
+    rec=NAME_HIST.get(pid)
+    if rec is None:
+        NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
     if rec.get("cur")!=name:
         old=rec.get("cur")
         if old and old not in rec["prev"]: rec["prev"].insert(0,old)
-        rec["cur"]=name; redis_cmd("SET",key,json.dumps(rec,ensure_ascii=False))
-    elif not raw:
-        redis_cmd("SET",key,json.dumps(rec,ensure_ascii=False))
-    return rec.get("prev",[])
+        rec["cur"]=name; return rec["prev"], True
+    return rec.get("prev",[]), False
 
 def load_disk():
     try:
@@ -119,14 +129,10 @@ def load_disk():
                 CACHE["players"][pid]=to_compact_from_raw(v)
         print(f"플레이어 {len(CACHE['players'])}명 로드")
     except Exception as e: print("플레이어 로드 실패:",e)
-    try:
-        nh=json.load(open(os.path.join(DATA,"name_history.json"),encoding="utf-8"))
-        NAME_HIST.clear(); NAME_HIST.update(nh)
-        with LOCK:
-            for pid,rec in NAME_HIST.items():
-                if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
-        print(f"닉네임 이력 {len(NAME_HIST)}명 로드")
-    except Exception as e: print("이름이력 로드 실패:",e)
+    hist_load()
+    with LOCK:
+        for pid,rec in NAME_HIST.items():
+            if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
 
 def to_compact_from_raw(v):
     heroes={}
@@ -193,6 +199,46 @@ def scheduler():
         try: refresh_leaderboards()
         except Exception as e: print("[갱신] 오류:",e)
 
+def sweep_names():
+    ids=list(CACHE["players"].keys())
+    if not ids: return
+    print(f"[이름검사] {len(ids)}명 이름 수집...")
+    s=connect(); rid=8000; changed=0; i=0
+    while i<len(ids):
+        batch=ids[i:i+60]; rid+=1
+        try:
+            s.sendall(fr({"request_id":rid,"type":"get_accounts_info"},{"player_ids":batch,"rich_info":True}))
+            for _ in range(40):
+                env,body=rd(s)
+                if env.get("type")=="get_accounts_info" and "account_info_jsons" in body:
+                    for js in body["account_info_jsons"]:
+                        try: acc=json.loads(js)
+                        except: continue
+                        pid=acc.get("player_id"); nm=(acc.get("player_state") or {}).get("name")
+                        if pid and nm:
+                            _,ch=hist_observe(pid,nm)
+                            if ch:
+                                changed+=1
+                                if pid in CACHE["players"]: CACHE["players"][pid]["n"]=nm
+                    break
+            i+=60
+        except (ConnectionError, socket.timeout, OSError):
+            try: s.close()
+            except: pass
+            time.sleep(1); s=connect(); continue
+        time.sleep(0.1)
+    s.close()
+    with LOCK:
+        for pid,rec in NAME_HIST.items():
+            if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+    hist_save(); build_site_data()
+    print(f"[이름검사] 완료 · 개명 {changed}건")
+def sweep_scheduler():
+    while True:
+        time.sleep(SWEEP_SEC)
+        try: sweep_names()
+        except Exception as e: print("[이름검사] 오류:",e)
+
 def hero_name(hid): return HEROES.get(str(hid),f"#{hid}")
 
 def parse_matches(jsons, pid):
@@ -237,7 +283,11 @@ def live_player(pid):
         if not acc: return None
         comp=parse_acc(acc)
         with LOCK: CACHE["players"][pid]=comp
-        comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{}); comp2["prev"]=hist_track(pid, comp.get("n"))
+        comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
+        _prev,_ch=hist_observe(pid, comp.get("n")); comp2["prev"]=_prev
+        if _ch:
+            if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=_prev
+            hist_save()
         try:
             mh=(acc.get("match_state") or {}).get("match_history",[])
             comp2["matches"]=fetch_matches(s, mh, pid)
@@ -281,6 +331,7 @@ def main():
     print("데이터 로드 중...")
     load_disk(); build_site_data()
     threading.Thread(target=scheduler,daemon=True).start()
+    threading.Thread(target=sweep_scheduler,daemon=True).start()
     srv=http.server.ThreadingHTTPServer(("0.0.0.0",WEB_PORT),H)
     print(f"\n✅ RS.GG 서버 실행 중 →  http://localhost:{WEB_PORT}")
     print(f"   리더보드 {LB_REFRESH_SEC//60}분마다 자동 갱신 · 프로필은 새로고침 버튼으로 실시간")

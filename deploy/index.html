@@ -126,7 +126,10 @@ document.getElementById('cnt').textContent=D.generated_count.toLocaleString();
 
 // 이름 검색 인덱스
 const NAMEIDX=[];
-for(const id in P) NAMEIDX.push([P[id].n.toLowerCase(), id]);
+for(const id in P){
+  NAMEIDX.push([P[id].n.toLowerCase(), id, null]);           // 현재 닉네임
+  (P[id].prev||[]).forEach(pn=>{ if(pn) NAMEIDX.push([pn.toLowerCase(), id, pn]); });  // 이전 닉네임
+}
 
 const app=document.getElementById('app');
 const ICON={
@@ -292,17 +295,22 @@ function matchesHtml(matches){
 window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
 function renderSearch(q){
   const f=q.toLowerCase();
-  let res=NAMEIDX.filter(([n])=>n.includes(f)).slice(0,300);
-  // 관련도: 정확일치 우선, 그다음 시작일치
-  res.sort((a,b)=>{const ax=a[0]===f?0:a[0].startsWith(f)?1:2, bx=b[0]===f?0:b[0].startsWith(f)?1:2;return ax-bx;});
+  const byId={};
+  for(const [nm,id,prevName] of NAMEIDX){
+    if(!nm.includes(f)) continue;
+    if(!byId[id]) byId[id]={id,prevMatch:null};
+    if(prevName) byId[id].prevMatch=prevName;   // 이전 닉네임으로 매칭됨
+  }
+  let res=Object.values(byId).slice(0,300);
+  res.sort((a,b)=>{const rk=x=>{const n=P[x.id].n.toLowerCase();return n===f?0:n.startsWith(f)?1:(x.prevMatch?3:2);};return rk(a)-rk(b);});
   let h=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색결과 ${res.length}명${res.length>=300?'+ (상위 300)':''}</div>`;
   h+='<div class="card"><table><thead><tr><th>닉네임</th><th>지역</th><th class="num">승률</th><th class="num">레벨</th><th>최고 랭킹</th></tr></thead><tbody>';
   if(!res.length) h+='<tr><td colspan="5" class="empty">결과 없음</td></tr>';
-  for(const [,id] of res){const p=P[id];
-    // 최고 랭킹 표시
+  for(const r of res){const p=P[r.id];
     let best='',bestRank=1e9;
     for(const lab in p.rk){if(p.rk[lab][0]<bestRank){bestRank=p.rk[lab][0];best=hk(lab)+' '+p.rk[lab][0]+'위';}}
-    h+=`<tr onclick="goPlayer('${id}')"><td><span class="name">${esc(p.n)}</span></td><td class="muted">${esc(p.r)}</td>
+    const prevTag=r.prevMatch?`<div class="muted" style="font-size:11px">↳ 옛 닉네임 <b>${esc(r.prevMatch)}</b> → 지금 <b>${esc(p.n)}</b></div>`:'';
+    h+=`<tr onclick="goPlayer('${r.id}')"><td><span class="name">${esc(p.n)}</span>${prevTag}</td><td class="muted">${esc(p.r)}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td><td class="num">${p.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
   }
   h+='</tbody></table></div>';
