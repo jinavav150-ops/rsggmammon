@@ -122,12 +122,27 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mmode{font-size:12px}
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none}
   .mmode{display:block;font-size:10.5px;margin-top:2px} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
+.langsel{position:relative}
+.lbtn{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:20px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.lbtn:hover{border-color:var(--acc)}
+.lbtn .cv{color:var(--mut);font-size:10px}
+.lmenu{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:70;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;box-shadow:0 14px 34px rgba(0,0,0,.45);min-width:236px}
+.lmt{font-size:11px;color:var(--mut);font-weight:700;margin:2px 4px 8px}
+.lmg{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.lgi{display:flex;align-items:center;gap:6px;background:none;border:1px solid transparent;border-radius:8px;padding:7px 9px;color:var(--tx);font-size:12.5px;font-weight:600;cursor:pointer;text-align:left;white-space:nowrap}
+.lgi:hover{background:var(--panel2)}
+.lgi.on{border-color:var(--acc);background:var(--panel2)}
+.lgi .fl{font-size:14px}
+.lgi .ck{margin-left:auto;color:var(--acc);font-weight:800}
+/* 좁은 화면: 언어 버튼을 첫 줄 오른쪽 끝, 검색창은 아래 줄 전체 */
+@media(max-width:700px){.langsel{order:1;margin-left:auto} .search{order:2;width:100%;flex:1 0 100%}}
+.lmenu{max-width:calc(100vw - 24px)}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </style>
 </head>
 <body>
 <header><div class="wrap hd">
-  <a class="logo" href="#/board/프로">
+  <a class="logo" href="#/board/pro">
     <svg class="emb" viewBox="0 0 32 32" fill="none">
       <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="#4a86ff"/><stop offset="1" stop-color="#8f6bff"/></linearGradient></defs>
@@ -139,13 +154,20 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
     </svg>
     RS<span>.GG</span></a>
   <span class="badge" id="seasonBadge">시즌</span>
-  <span class="owner" title="제작 · 운영">
+  <span class="owner">
     <svg viewBox="0 0 24 24"><path d="M4 9l4 3 4-6 4 6 4-3-1.5 10H5.5L4 9Z"/><path d="M5.5 19h13"/></svg>
     by <span class="mammon">MAMMON</span></span>
   <div class="search">
-    <input id="q" placeholder="닉네임 검색 (예: earth, GG, レオ)" autocomplete="off">
+    <input id="q" autocomplete="off">
     <button class="btn" onclick="doSearch()">
-      <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg> 검색</button>
+      <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg> <span id="searchLbl"></span></button>
+  </div>
+  <div class="langsel">
+    <button class="lbtn" id="langBtn" onclick="toggleLangMenu(event)"><span id="langLbl"></span><span class="cv">▾</span></button>
+    <div class="lmenu" id="langMenu" onclick="event.stopPropagation()">
+      <div class="lmt" id="langTitle"></div>
+      <div class="lmg" id="langGrid"></div>
+    </div>
   </div>
 </div></header>
 
@@ -155,15 +177,59 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
     <svg class="crown" viewBox="0 0 24 24"><path d="M4 9l4 3 4-6 4 6 4-3-1.5 10H5.5L4 9Z"/><path d="M5.5 19h13"/></svg>
     Created &amp; owned by <span class="mammon" style="font-size:14px">MAMMON</span>
   </div>
-  Ricochet Squad 비공식 전적검색 · 데이터 <span id="cnt"></span>명 · © 2026 MAMMON. All rights reserved.
+  <span id="footerTxt"></span> · © 2026 MAMMON. All rights reserved.
 </footer>
 
 <div id="perkTip"></div>
+<script src="i18n.js"></script>
 <script src="site_data.js"></script>
 <script>
 const D=window.DATA, P=D.players, B=D.boards, BM=D.board_meta;
-document.getElementById('seasonBadge').textContent='시즌 '+D.season.slice(0,4)+'-'+D.season.slice(4);
-document.getElementById('cnt').textContent=D.generated_count.toLocaleString();
+const PMETA=D.perk_meta||{};
+
+// ── 다국어 ────────────────────────────────────────────
+// 게임 안 이름(캐릭터·맵·특성)은 게임 공식 번역, UI 문구는 i18n.js 표에서 가져온다.
+const I18N=window.I18N||{};
+const LANG_ORDER=['ko','en','ja','zh-TW','fr','de','es','pt','ru'];
+function detectLang(){
+  try{const saved=localStorage.getItem('rsgg_lang'); if(saved&&I18N[saved]) return saved;}catch(e){}
+  const cands=(navigator.languages&&navigator.languages.length)?navigator.languages:[navigator.language||''];
+  for(const raw of cands){
+    const l=String(raw||'').toLowerCase();
+    if(l.startsWith('ko'))return 'ko';   if(l.startsWith('ja'))return 'ja';
+    if(l.startsWith('zh'))return 'zh-TW';if(l.startsWith('fr'))return 'fr';
+    if(l.startsWith('de'))return 'de';   if(l.startsWith('es'))return 'es';
+    if(l.startsWith('pt'))return 'pt';   if(l.startsWith('ru'))return 'ru';
+    if(l.startsWith('en'))return 'en';
+  }
+  return I18N.en?'en':'ko';
+}
+const EMPTY={ui:{},heroes:{},maps:{},perks:{},regions:{},label:'',flag:''};
+let LANG=detectLang(), L=I18N[LANG]||I18N.en||EMPTY;
+function t(k,v){let s=(L.ui&&L.ui[k]!=null)?L.ui[k]:k; if(v)for(const n in v)s=s.split('{'+n+'}').join(v[n]); return s;}
+const mapName=id=>(L.maps&&L.maps[String(id)])||'';
+const perkName=id=>(L.perks&&L.perks[String(id)])||('#'+id);
+const regionName=c=>(L.regions&&L.regions[c])||c||'';
+const boardLabel=b=>b==='pro'?t('tab_pro'):b==='casual'?t('tab_casual'):hk(b);
+window.setLang=function(l){ if(!I18N[l])return; LANG=l; L=I18N[l];
+  try{localStorage.setItem('rsgg_lang',l);}catch(e){}
+  applyStatic(); render(); closeLangMenu(); };
+window.toggleLangMenu=function(e){e.stopPropagation();const m=document.getElementById('langMenu');
+  m.style.display=(m.style.display==='block')?'none':'block';};
+function closeLangMenu(){const m=document.getElementById('langMenu'); if(m)m.style.display='none';}
+document.addEventListener('click',closeLangMenu);
+function applyStatic(){
+  document.documentElement.lang=LANG;
+  document.title=t('site_title');
+  document.getElementById('seasonBadge').textContent=t('season')+' '+D.season.slice(0,4)+'-'+D.season.slice(4);
+  document.getElementById('q').placeholder=t('search_ph');
+  document.getElementById('searchLbl').textContent=t('search');
+  document.getElementById('footerTxt').textContent=t('footer',{n:D.generated_count.toLocaleString()});
+  document.getElementById('langLbl').textContent=(L.flag||'')+' '+(L.label||LANG);
+  document.getElementById('langTitle').textContent=t('lang_title');
+  document.getElementById('langGrid').innerHTML=LANG_ORDER.filter(c=>I18N[c]).map(c=>
+    `<button type="button" class="lgi${c===LANG?' on':''}" onclick="setLang('${c}')"><span class="fl">${I18N[c].flag}</span>${I18N[c].label}${c===LANG?'<span class="ck">✓</span>':''}</button>`).join('');
+}
 
 // 이름 검색 인덱스
 const NAMEIDX=[];
@@ -179,17 +245,17 @@ const ICON={
   history:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v4h4"/><path d="M12 8v4l3 2"/></svg>',
   refresh:'<svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v4h-4"/></svg>',
 };
-const HERO_KR={Dread:"드레드",Khan:"칸",Vector:"벡터",Oni:"오니",Remedy:"레메디",Sejin:"세진",Twinkle:"트윙클",Jagger:"재거",Calibri:"칼리브리",Leo:"레오",Magnus:"망누스",Nova:"노바",Fury:"퓨리"};
-const hk=n=>HERO_KR[n]||n;  // 캐릭명만 한글로 (닉네임 등은 원본 유지)
+const hk=n=>(L.heroes&&L.heroes[n])||n;  // 캐릭명만 번역 (닉네임 등은 원본 유지)
 const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
 function heroImg(n,cls){const f=String(n||'').toLowerCase();if(!f||f[0]==='#')return '';
   return `<img class="hi ${cls||''}" src="img/hero/${f}.png" alt="" loading="lazy" onerror="this.style.display='none'">`;}
 // 퍽 = 게임의 육각 배지. 분류(type 0~8)가 곧 배지 그림
 function perkChips(arr,sm){return (arr||[]).map(p=>{
-  const a=Array.isArray(p); const n=a?p[0]:p;
-  const t=(a&&p[1]>=0&&p[1]<=8)?p[1]:0;
-  return `<button type="button" class="pkb${sm?' sm':''}" data-t="${esc(n)}" title="${esc(n)}" onclick="showPerk(event,this)"><img src="img/perk/${t}.png" alt=""></button>`;
+  let nm,ty;
+  if(Array.isArray(p)){ nm=p[0]; ty=(p[1]>=0&&p[1]<=8)?p[1]:0; }        // 옛 형식([이름,분류,아이콘])
+  else { const m=PMETA[String(p)]||[]; nm=perkName(p); ty=(m[0]>=0&&m[0]<=8)?m[0]:0; }
+  return `<button type="button" class="pkb${sm?' sm':''}" data-t="${esc(nm)}" title="${esc(nm)}" onclick="showPerk(event,this)"><img src="img/perk/${ty}.png" alt=""></button>`;
 }).join('');}
 window.showPerk=(ev,el)=>{ev.stopPropagation();const tip=document.getElementById('perkTip');
   if(tip.style.display==='block'&&tip._el===el){tip.style.display='none';return;}
@@ -203,15 +269,15 @@ document.addEventListener('click',hidePerkTip);
 window.addEventListener('scroll',hidePerkTip,true);
 function medalCls(r){return r===1?'r1':r===2?'r2':r===3?'r3':''}
 
-let curBoard='프로', curPage=0, curRegion='', curFilter='';
+let curBoard='pro', curPage=0, curRegion='', curFilter='';
 const PAGE=100;
 
 function tabsHtml(){
-  let modes=['프로','캐주얼'];
+  let modes=['pro','casual'];
   let h='<div class="tabs">';
-  for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${m}</div>`;
+  for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
   h+=`<select class="tab hero ${D.hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
-  h+=`<option value="">캐릭터별▾</option>`;
+  h+=`<option value="">${t('tab_hero')}▾</option>`;
   for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
   h+='</select></div>';
   return h;
@@ -219,8 +285,8 @@ function tabsHtml(){
 
 function regionOptions(){
   const set=new Set(); for(const id in P) if(P[id].r) set.add(P[id].r);
-  let h=`<select onchange="curRegion=this.value;curPage=0;render()"><option value="">전체 지역</option>`;
-  for(const r of [...set].sort()) h+=`<option value="${r}" ${curRegion===r?'selected':''}>${r}</option>`;
+  let h=`<select onchange="curRegion=this.value;curPage=0;render()"><option value="">${t('all_regions')}</option>`;
+  for(const r of [...set].sort()) h+=`<option value="${r}" ${curRegion===r?'selected':''}>${regionName(r)}</option>`;
   return h+'</select>';
 }
 
@@ -235,22 +301,22 @@ function renderBoard(){
   const size=BM[curBoard]?.size||ids.length;
   let h=tabsHtml();
   h+=`<div class="row-filter">${regionOptions()}
-    <input class="mini" placeholder="이 랭킹서 이름 찾기" value="${esc(curFilter)}" oninput="curFilter=this.value;curPage=0;render()" style="flex:1;min-width:140px">
-    <span class="muted">${hk(curBoard)} · 전체 ${size.toLocaleString()}명${curRegion?` · ${curRegion} ${total.toLocaleString()}명`:''}</span></div>`;
-  h+='<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">순위</th><th>닉네임</th><th class="num">점수</th><th class="num">승률</th><th class="num">레벨</th><th class="num">MVP</th></tr></thead><tbody>';
-  if(!slice.length) h+='<tr><td colspan="6" class="empty">결과 없음</td></tr>';
+    <input class="mini" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="curFilter=this.value;curPage=0;render()" style="flex:1;min-width:140px">
+    <span class="muted">${boardLabel(curBoard)} · ${t('total_n',{n:size.toLocaleString()})}${curRegion?` · ${regionName(curRegion)} ${total.toLocaleString()}`:''}</span></div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
+  if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
   for(const r of slice){const p=P[r.id];const sc=(p.rk[curBoard]||[])[1];
     h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}</td>
-      <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(p.r)}</span></td>
+      <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(regionName(p.r))}</span></td>
       <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td>
       <td class="num">${p.lv??'-'}</td><td class="num">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;
   }
   h+='</tbody></table>';
   h+=`<div class="pager"><button onclick="curPage=0;render()" ${curPage===0?'disabled':''}>«</button>
-    <button onclick="curPage--;render()" ${curPage===0?'disabled':''}>이전</button>
+    <button onclick="curPage--;render()" ${curPage===0?'disabled':''}>${t('prev')}</button>
     <span>${curPage+1} / ${pages}</span>
-    <button onclick="curPage++;render()" ${curPage>=pages-1?'disabled':''}>다음</button>
+    <button onclick="curPage++;render()" ${curPage>=pages-1?'disabled':''}>${t('next')}</button>
     <button onclick="curPage=${pages-1};render()" ${curPage>=pages-1?'disabled':''}>»</button></div></div>`;
   app.innerHTML=h;
 }
@@ -258,48 +324,48 @@ function renderBoard(){
 function renderPlayer(id){
   const p=P[id];
   if(!p){
-    if(window.LIVE){ app.innerHTML='<div class="card"><div class="empty">불러오는 중…</div></div>';
-      fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json()).then(j=>{ if(j.ok&&j.player){P[id]=j.player; if(location.hash==='#/player/'+id) renderPlayer(id);} else app.innerHTML='<div class="card"><div class="empty">유저 없음</div></div>'; }).catch(()=>{app.innerHTML='<div class="card"><div class="empty">불러오기 실패</div></div>';});
+    if(window.LIVE){ app.innerHTML=`<div class="card"><div class="empty">${t('loading')}</div></div>`;
+      fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json()).then(j=>{ if(j.ok&&j.player){P[id]=j.player; if(location.hash==='#/player/'+id) renderPlayer(id);} else app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; }).catch(()=>{app.innerHTML=`<div class="card"><div class="empty">${t('load_error')}</div></div>`;});
       return;
     }
-    app.innerHTML='<div class="card"><div class="empty">유저 없음</div></div>'; return;
+    app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; return;
   }
   const init=(p.n.trim()[0]||'?').toUpperCase();
   // 대표 캐릭터 = 플레이시간 1위 (아바타로 사용)
   const mainHero=Object.entries(p.h||{}).filter(([,v])=>v.lv!=null)
     .sort((a,b)=>(b[1].pt||0)-(a[1].pt||0))[0]?.[0];
   const avatar=mainHero?`<img src="img/hero/${mainHero.toLowerCase()}.png" alt="" onerror="this.parentNode.textContent='${esc(init)}'"><span class="mh">${hk(mainHero)}</span>`:esc(init);
-  let h=`<a class="back" onclick="history.back()">← 뒤로</a>`;
-  const liveBtn=window.LIVE?`<button class="btn" id="refreshBtn" onclick="refreshPlayer('${id}')" style="margin-left:auto">${ICON.refresh} 실시간 새로고침</button>`:'';
+  let h=`<a class="back" onclick="history.back()">← ${t('back')}</a>`;
+  const liveBtn=window.LIVE?`<button class="btn" id="refreshBtn" onclick="refreshPlayer('${id}')" style="margin-left:auto">${ICON.refresh} ${t('refresh')}</button>`:'';
   h+=`<div class="card"><div class="pf-top">
     <div class="pf-av">${avatar}</div>
     <div><div class="pf-name">${esc(p.n)}</div>
-    <div class="muted">${esc(p.r)} · 레벨 ${p.lv??'-'}${mainHero?' · 주 캐릭터 '+hk(mainHero):''}</div>
-    ${p.prev&&p.prev.length?`<div style="font-size:12px;margin-top:4px"><span class="muted">이전 닉네임 </span>${p.prev.map(pn=>`<span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 0 0;color:var(--acc2);font-weight:600">${esc(pn)}</span>`).join('')}</div>`:''}
+    <div class="muted">${esc(regionName(p.r))} · ${t('level')} ${p.lv??'-'}${mainHero?' · '+t('main_hero')+' '+hk(mainHero):''}</div>
+    ${p.prev&&p.prev.length?`<div style="font-size:12px;margin-top:4px"><span class="muted">${t('prev_names')} </span>${p.prev.map(pn=>`<span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 0 0;color:var(--acc2);font-weight:600">${esc(pn)}</span>`).join('')}</div>`:''}
     <div class="muted" id="freshInfo" style="font-size:11px"></div></div>
     ${liveBtn}</div>`;
   const fmt=n=>n!=null?n.toLocaleString():'-';
   h+=`<div class="stat-grid">
-    <div class="stat"><div class="k">승률</div><div class="v ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</div></div>
-    <div class="stat"><div class="k">KD</div><div class="v">${p.kd??'-'}</div></div>
-    <div class="stat"><div class="k">킬 / 데스</div><div class="v" style="font-size:16px">${fmt(p.k)} / ${fmt(p.d)}</div></div>
-    <div class="stat"><div class="k">플레이 매치</div><div class="v">${fmt(p.m)}</div></div>
-    <div class="stat"><div class="k">승리</div><div class="v">${fmt(p.w)}</div></div>
-    <div class="stat"><div class="k">MVP</div><div class="v">${fmt(p.mvp)}</div></div>
-    <div class="stat"><div class="k">플레이시간</div><div class="v">${p.pt!=null?p.pt+'시':'-'}</div></div>
-    <div class="stat"><div class="k">총 데미지</div><div class="v" style="font-size:16px">${fmt(p.dmg)}</div></div>
+    <div class="stat"><div class="k">${t('s_wr')}</div><div class="v ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</div></div>
+    <div class="stat"><div class="k">${t('s_kd')}</div><div class="v">${p.kd??'-'}</div></div>
+    <div class="stat"><div class="k">${t('s_kills_deaths')}</div><div class="v" style="font-size:16px">${fmt(p.k)} / ${fmt(p.d)}</div></div>
+    <div class="stat"><div class="k">${t('s_matches')}</div><div class="v">${fmt(p.m)}</div></div>
+    <div class="stat"><div class="k">${t('s_wins')}</div><div class="v">${fmt(p.w)}</div></div>
+    <div class="stat"><div class="k">${t('c_mvp')}</div><div class="v">${fmt(p.mvp)}</div></div>
+    <div class="stat"><div class="k">${t('s_playtime')}</div><div class="v">${p.pt!=null?t('hours_unit',{n:p.pt}):'-'}</div></div>
+    <div class="stat"><div class="k">${t('s_damage')}</div><div class="v" style="font-size:16px">${fmt(p.dmg)}</div></div>
   </div></div>`;
   // 랭킹 (모드 + 캐릭터)
   const rk=p.rk||{};
-  const modeRows=['프로','캐주얼'].filter(m=>rk[m]);
+  const modeRows=['pro','casual'].filter(m=>rk[m]);
   const heroRows=D.hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
-  h+=`<div class="sect-t">${ICON.trophy} 랭킹 (시즌 ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card" style="overflow-x:auto"><table>
-    <thead><tr><th>구분</th><th class="num">순위</th><th class="num">점수</th><th class="hcol">상위 %</th></tr></thead><tbody>`;
+  h+=`<div class="sect-t">${ICON.trophy} ${t('rank_section')} (${t('season')} ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card" style="overflow-x:auto"><table>
+    <thead><tr><th>${t('c_type')}</th><th class="num">${t('c_rank')}</th><th class="num">${t('c_score')}</th><th class="hcol">${t('c_top_pct')}</th></tr></thead><tbody>`;
   const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
-    h+=`<tr><td>${isHero?ICON.target+' ':''}${isHero?hk(lab):lab}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
+    h+=`<tr><td>${isHero?ICON.target+' ':''}${boardLabel(lab)}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
       <td class="num">${score.toLocaleString()}</td>
       <td class="hcol"><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
-  if(!modeRows.length&&!heroRows.length) h+='<tr><td colspan="4" class="empty">랭킹 기록 없음</td></tr>';
+  if(!modeRows.length&&!heroRows.length) h+=`<tr><td colspan="4" class="empty">${t('no_rank')}</td></tr>`;
   modeRows.forEach(m=>addRow(m,false));
   heroRows.forEach(hl=>addRow(hl,true));
   h+='</tbody></table></div>';
@@ -308,21 +374,21 @@ function renderPlayer(id){
   const hero_list=Object.keys(H).filter(hn=>H[hn].lv!=null)
     .sort((a,b)=>(H[b].pt||0)-(H[a].pt||0));
   if(hero_list.length){
-    h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card">';
-    for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':null;
+    h+='<div class="sect-t">'+ICON.target+' '+t('hero_detail')+'</div><div class="card">';
+    for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?t('season_rank',{r:rk[hn][0].toLocaleString()}):null;
       h+=`<div class="hrow">
         <div><span class="hn">${heroImg(hn,'hi-lg')}${hk(hn)}</span><span class="lv">Lv.${hd.lv??'-'}</span></div>
-        <div class="hm"><span>⏱ ${hd.pt!=null?hd.pt+'시':'-'}</span><span>레이팅 <b>${hd.rt!=null?hd.rt.toLocaleString():'-'}</b></span>${seasonRank?`<span>시즌 ${seasonRank}</span>`:''}${hd.sk?`<span>🎨 ${esc(hd.sk)}</span>`:''}</div>
-        ${(hd.pk&&hd.pk.length)?`<div class="pk"><span class="pkl">특성</span>${perkChips(hd.pk)}</div>`:''}
+        <div class="hm"><span>⏱ ${hd.pt!=null?t('hours_unit',{n:hd.pt}):'-'}</span><span>${t('c_rating')} <b>${hd.rt!=null?hd.rt.toLocaleString():'-'}</b></span>${seasonRank?`<span>${seasonRank}</span>`:''}${hd.sk?`<span>🎨 ${esc(hd.sk)}</span>`:''}</div>
+        ${(hd.pk&&hd.pk.length)?`<div class="pk"><span class="pkl">${t('perks')}</span>${perkChips(hd.pk)}</div>`:''}
       </div>`;
     }
     h+='</div>';
   }
   // 최근 경기
-  h+='<div class="sect-t">'+ICON.history+' 최근 경기 <span id="matchInfo" class="muted" style="font-size:12px;font-weight:400"></span></div><div id="matchBox">';
+  h+='<div class="sect-t">'+ICON.history+' '+t('recent')+' <span id="matchInfo" class="muted" style="font-size:12px;font-weight:400"></span></div><div id="matchBox">';
   if(p.matches&&p.matches.length){ h+=matchesHtml(p.matches); }
-  else if(window.LIVE){ h+='<div class="card"><div class="empty">위 <b>실시간 새로고침</b> 버튼을 누르면 최근 경기가 표시됩니다</div></div>'; }
-  else { h+='<div class="card"><div class="empty">최근 경기는 실시간 서버(서버 실행 시)에서만 조회됩니다</div></div>'; }
+  else if(window.LIVE){ h+=`<div class="card"><div class="empty">${t('live_hint')}</div></div>`; }
+  else { h+=`<div class="card"><div class="empty">${t('static_hint')}</div></div>`; }
   h+='</div>';
   app.innerHTML=h; window.scrollTo(0,0);
   // 실시간 모드면 경기 자동 로드 (한 번만)
@@ -330,21 +396,24 @@ function renderPlayer(id){
 }
 
 function matchesHtml(matches){
-  const typeName=t=>t===1?'프로':t===2?'캐주얼':'-';
-  const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<3600)return Math.floor(s/60)+'분 전';if(s<86400)return Math.floor(s/3600)+'시간 전';return Math.floor(s/86400)+'일 전';};
+  const typeName=v=>v===1?t('tab_pro'):v===2?t('tab_casual'):'-';
+  const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);
+    if(s<3600)return t('ago_min',{n:Math.floor(s/60)});
+    if(s<86400)return t('ago_hour',{n:Math.floor(s/3600)});
+    return t('ago_day',{n:Math.floor(s/86400)});};
   const dur=s=>s?Math.floor(s/60)+':'+String(s%60).padStart(2,'0'):'';
   const num=n=>n!=null?n.toLocaleString():'-';
-  if(!matches||!matches.length) return '<div class="card"><div class="empty">경기 기록 없음</div></div>';
+  if(!matches||!matches.length) return `<div class="card"><div class="empty">${t('no_match')}</div></div>`;
   let h='<div class="card" style="overflow-x:auto"><table class="mtab"><thead><tr>'
-    +'<th>결과</th><th>캐릭터</th><th>맵 · 모드</th><th class="num">K / D</th><th class="num hcol">데미지</th><th class="num hcol">레이팅</th><th>시간</th></tr></thead><tbody>';
+    +`<th>${t('c_result')}</th><th>${t('c_hero')}</th><th>${t('c_map_mode')}</th><th class="num">${t('c_kd')}</th><th class="num hcol">${t('c_dmg')}</th><th class="num hcol">${t('c_rating')}</th><th>${t('c_time')}</th></tr></thead><tbody>`;
   matches.forEach((m,i)=>{
     const cls=m.win?'win':'loss';
-    const rb=`<span class="rb ${cls}">${m.win?'승':'패'}</span>`;
+    const rb=`<span class="rb ${cls}">${m.win?t('win'):t('lose')}</span>`;
     const mvp=m.mvpme?'<span class="mvpb">MVP</span>':'';
     h+=`<tr class="mrow ${cls}" onclick="toggleMatch(${i})">
       <td><div style="display:flex;align-items:center;gap:5px">${rb}${mvp}<span class="muted" style="font-variant-numeric:tabular-nums">${m.mys}-${m.ens}</span></div></td>
       <td class="hcell">${heroImg(m.myhero)}${esc(hk(m.myhero))}</td>
-      <td>${esc(m.map)||'-'}<span class="muted mmode"> · ${typeName(m.type)} · ${dur(m.dur)}</span></td>
+      <td>${esc(mapName(m.map))||'-'}<span class="muted mmode"> · ${typeName(m.type)} · ${dur(m.dur)}</span></td>
       <td class="num">${m.myk??'-'} / ${m.myd??'-'}</td>
       <td class="num hcol">${num(m.dmg)}</td>
       <td class="num hcol">${num(m.myrt)}</td>
@@ -355,8 +424,8 @@ function matchesHtml(matches){
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
-        <div class="sbteam ally"><div class="sbhead"><span class="muted">우리 팀 · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
-        <div class="sbteam foe"><div class="sbhead"><span class="muted">상대 팀 · </span><b>${m.ens}</b></div>${side(t2)}</div>
+        <div class="sbteam ally"><div class="sbhead"><span class="muted">${t('our_team')} · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
+        <div class="sbteam foe"><div class="sbhead"><span class="muted">${t('enemy_team')} · </span><b>${m.ens}</b></div>${side(t2)}</div>
       </div></td></tr>`;
   });
   return h+'</tbody></table></div>';
@@ -364,17 +433,17 @@ function matchesHtml(matches){
 window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
 function searchRow(it){
   let best='',bestRank=1e9; const rk=it.rk||{};
-  for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=hk(lab)+' '+rk[lab][0]+'위';}}
-  const prevTag=it.prevMatch?`<div class="muted" style="font-size:11px">↳ 옛 닉네임 <b>${esc(it.prevMatch)}</b> → 지금 <b>${esc(it.n)}</b></div>`:'';
-  return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(it.r||'')}</td>`
+  for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=boardLabel(lab)+' '+t('rank_suffix',{r:rk[lab][0]});}}
+  const prevTag=it.prevMatch?`<div class="muted" style="font-size:11px">↳ ${t('old_nick')} <b>${esc(it.prevMatch)}</b> → ${t('now_nick')} <b>${esc(it.n)}</b></div>`:'';
+  return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(regionName(it.r))}</td>`
     +`<td class="num wr ${wrClass(it.wr)}">${it.wr!=null?it.wr+'%':'-'}</td><td class="num">${it.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
 }
 function renderSearchResults(q,items){
   const f=q.toLowerCase();
   items.sort((a,b)=>{const rk=x=>{const n=(x.n||'').toLowerCase();return n===f?0:n.startsWith(f)?1:(x.prevMatch?3:2);};return rk(a)-rk(b);});
-  let h=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색결과 ${items.length}명${items.length>=300?'+ (상위 300)':''}</div>`;
-  h+='<div class="card" style="overflow-x:auto"><table><thead><tr><th>닉네임</th><th>지역</th><th class="num">승률</th><th class="num">레벨</th><th>최고 랭킹</th></tr></thead><tbody>';
-  if(!items.length) h+='<tr><td colspan="5" class="empty">결과 없음</td></tr>';
+  let h=`<a class="back" onclick="goBoard('pro')">← ${t('to_ranking')}</a><div class="sect-t">${t('sr_title',{q:esc(q),n:items.length})}${items.length>=300?'+':''}</div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th>${t('c_name')}</th><th>${t('sr_region')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th>${t('sr_best')}</th></tr></thead><tbody>`;
+  if(!items.length) h+=`<tr><td colspan="5" class="empty">${t('no_result')}</td></tr>`;
   for(const it of items) h+=searchRow(it);
   h+='</tbody></table></div>'; app.innerHTML=h;
 }
@@ -385,7 +454,7 @@ function clientSearch(q){
 }
 function renderSearch(q){
   if(window.LIVE){   // 서버 실시간 검색 (개명 즉시 반영, 현재 닉네임으로 표시)
-    app.innerHTML=`<a class="back" onclick="goBoard('프로')">← 랭킹으로</a><div class="sect-t">'${esc(q)}' 검색 중…</div>`;
+    app.innerHTML=`<a class="back" onclick="goBoard('pro')">← ${t('to_ranking')}</a><div class="sect-t">${t('searching')}</div>`;
     fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json())
       .then(j=>renderSearchResults(q,(j.results||[]).map(r=>({id:r.id,n:r.n,r:r.r,wr:r.wr,lv:r.lv,prevMatch:r.pm,rk:r.rk}))))
       .catch(()=>renderSearchResults(q,clientSearch(q)));
@@ -405,7 +474,7 @@ function render(){
   const h=decodeURIComponent(location.hash||'');
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
-  if(h.startsWith('#/board/')){curBoard=h.slice(8)||'프로';}
+  if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
   renderBoard();
 }
 window.addEventListener('hashchange',render);
@@ -413,24 +482,28 @@ window.addEventListener('hashchange',render);
 // 실시간 새로고침 (백엔드 서버가 있을 때만)
 window.LIVE=false;
 async function refreshPlayer(id){
-  const btn=document.getElementById('refreshBtn'); if(btn){btn.disabled=true;btn.textContent='조회중…';}
+  const btn=document.getElementById('refreshBtn'); if(btn){btn.disabled=true;btn.textContent=t('loading_live');}
   try{
     const r=await fetch('/api/player/'+id); const j=await r.json();
     if(j.ok&&j.player){ P[id]=Object.assign(P[id]||{},j.player); renderPlayer(id);
-      const fi=document.getElementById('freshInfo'); if(fi) fi.textContent='방금 실시간 갱신됨 ✓';
-    } else { if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' 실시간 새로고침';} alert('조회 실패'); }
-  }catch(e){ if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' 실시간 새로고침';} alert('서버 연결 실패: '+e); }
+      const fi=document.getElementById('freshInfo'); if(fi) fi.textContent=t('just_refreshed')+' ✓';
+    } else { if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('load_fail')); }
+  }catch(e){ if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('conn_fail')+': '+e); }
 }
-function timeAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);if(s<60)return s+'초 전';if(s<3600)return Math.floor(s/60)+'분 전';return Math.floor(s/3600)+'시간 전';}
+function timeAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);
+  if(s<60)return t('ago_sec',{n:s});
+  if(s<3600)return t('ago_min',{n:Math.floor(s/60)});
+  return t('ago_hour',{n:Math.floor(s/3600)});}
 fetch('/api/status').then(r=>r.json()).then(st=>{
   if(st&&st.live){ window.LIVE=true;
     const b=document.getElementById('seasonBadge');
-    if(st.last_refresh) b.title='리더보드 갱신: '+timeAgo(st.last_refresh);
+    if(st.last_refresh) b.title=timeAgo(st.last_refresh);
     if(location.hash.startsWith('#/player/')) render(); // 버튼 노출 위해 재렌더
   }
 }).catch(()=>{});
 
-if(!location.hash) location.hash='#/board/프로'; else render();
+applyStatic();
+if(!location.hash) location.hash='#/board/pro'; else render();
 </script>
 </body>
 </html>

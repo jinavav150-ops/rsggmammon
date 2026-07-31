@@ -21,6 +21,7 @@ HEROES={"108140568":"Dread","80931949":"Khan","61223451":"Vector","631049":"Oni"
 "45850136":"Magnus","65893852":"Nova","91887043":"Fury"}
 REGION_KR={"ap-northeast-2":"한국","eu-central-1":"유럽","us-east-1":"미국동부",
 "us-west-2":"미국서부","ap-southeast-1":"싱가포르","ap-south-1":"인도"}
+REGION_REV={v:k for k,v in REGION_KR.items()}
 LEVEL_KR={"85682979":"퍼시피카","34624828":"항구","57585175":"하늘공원","36077481":"균열 관측소","41172989":"용광로"}
 TN=json.load(open(os.path.join(DATA,"tech_names.json"),encoding="utf-8"))
 try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8"))
@@ -69,7 +70,7 @@ def perk_list(hv):
     for sid in sorted(slots, key=lambda x: int(x) if str(x).isdigit() else 0):
         p=(slots.get(sid) or {}).get("selected_perk_id")
         if not p: continue
-        out.append(perk_of(p))
+        out.append(int(p))
     return out
 def parse_acc(acc):
     cc=(acc.get("counters_state") or {}).get("counter_collection",{})
@@ -82,7 +83,7 @@ def parse_acc(acc):
         heroes[HEROES.get(hid,hid)]={"lv":hv.get("level"),"pt":round(hpt/3600,1) if isinstance(hpt,int) else None,
             "rt":hg(H_RT),"pre":hg(H_PRE),"sk":skin_name(hg(H_SKIN)),"pk":perk_list(hv)}
     regs=acc.get("regions") or []
-    return {"n":(acc.get("player_state") or {}).get("name",""),"r":REGION_KR.get(regs[0],regs[0]) if regs else "",
+    return {"n":(acc.get("player_state") or {}).get("name",""),"r":regs[0] if regs else "",
         "lv":g(C["level"]),"wr":round(wins/m*100,1) if (isinstance(wins,int) and isinstance(m,int) and m) else None,
         "mvp":g(C["mvp"]),"m":m,"w":wins,"kd":round(k/d,2) if (isinstance(k,int) and isinstance(d,int) and d) else None,
         "k":k,"d":d,"dmg":g(C["damage"]),"heal":g(C["heal"]),"db":g(C["double"]),"tr":g(C["triple"]),
@@ -155,14 +156,16 @@ def to_compact_from_raw(v):
     heroes={}
     for hn,hd in (v.get("heroes") or {}).items():
         heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin"),
-            "pk":[perk_of(x) for x in (hd.get("pk") or [])]}
-    return {"n":v.get("name",""),"r":v.get("region",""),"lv":v.get("level"),"wr":v.get("winrate"),
+            "pk":[int(x) for x in (hd.get("pk") or [])]}
+    reg=v.get("region","");  reg=REGION_REV.get(reg,reg)   # 옛 스냅샷은 한글로 저장돼 있음
+    return {"n":v.get("name",""),"r":reg,"lv":v.get("level"),"wr":v.get("winrate"),
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
         "d":v.get("deaths"),"dmg":v.get("damage"),"heal":v.get("heal"),"db":v.get("double"),
         "tr":v.get("triple"),"fh":v.get("final"),"pt":v.get("playtime_h"),"pm":v.get("pro_matches"),
         "rm":v.get("recent_matches",[]),"h":heroes}
 
-def label_of(kind,label): return label if kind=="hero" else ("프로" if kind=="pro" else "캐주얼")
+def label_of(kind,label): return label if kind=="hero" else ("pro" if kind=="pro" else "casual")
+# 보드 키는 언어중립(pro/casual/영문 캐릭터명). 표시 이름은 브라우저가 언어별로 붙인다.
 
 def apply_leaderboards(lb):
     boards={}; meta={}; ranks={}; blabels=[]; hlabels=[]
@@ -183,7 +186,11 @@ def build_site_data():
         players={}
         for pid,p in CACHE["players"].items():
             q=dict(p); q["rk"]=CACHE["player_ranks"].get(pid,{}); players[pid]=q
-        out={"season":CACHE["season"],"board_labels":CACHE["board_labels"],"hero_labels":CACHE["hero_labels"],
+        pmeta={}
+        for pid,v in PERK_KR.items():
+            if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
+            elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
+        out={"perk_meta":pmeta,"season":CACHE["season"],"board_labels":CACHE["board_labels"],"hero_labels":CACHE["hero_labels"],
             "board_meta":CACHE["board_meta"],"boards":CACHE["boards"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     with open(os.path.join(HERE,"site_data.js"),"w",encoding="utf-8") as f:
@@ -263,7 +270,7 @@ def match_perks(pr):
     """그 경기에 실제로 사용한 퍽. 한 경기에서 캐릭터를 바꿨으면 캐릭터별로 나온다."""
     out=[]
     for hr in (pr.get("HeroResultData") or []):
-        names=[perk_of(x) for x in (hr.get("Perks") or []) if x]
+        names=[int(x) for x in (hr.get("Perks") or []) if x]
         if names: out.append({"h":hero_name(hr.get("HeroId")),"pk":names})
     return out
 def parse_matches(jsons, pid):
@@ -280,7 +287,7 @@ def parse_matches(jsons, pid):
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
-            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":LEVEL_KR.get(str(m.get("LevelId")),""),"dmg":me.get("Damage"),"players":players})
+            "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":str(m.get("LevelId") or ""),"dmg":me.get("Damage"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
     return out[:20]
 
