@@ -65,7 +65,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
 .stat .k{font-size:12px;color:var(--mut)}
 .stat .v{font-size:20px;font-weight:800;margin-top:3px}
-.sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px}
+.sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sect-t>.ic{flex:none}
+#matchInfo{flex:1 1 auto;min-width:0}
 .sect-t .ic{color:var(--acc)}
 .pct{height:6px;background:var(--line);border-radius:4px;overflow:hidden;min-width:80px;display:inline-block;vertical-align:middle;width:90px}
 .pct>i{display:block;height:100%;background:var(--acc)}
@@ -136,11 +138,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mdmg{display:none}
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none}
   .mmode{display:block;font-size:10.5px;margin-top:2px} .mtab th,.mtab td{padding:7px 6px;font-size:12px}
-  .mdmg{display:block;font-size:10.5px;color:var(--mut);font-weight:400;margin-top:2px}}
+  .mdmg{display:block;font-size:10px;color:var(--mut);font-weight:400;margin-top:2px}
+  .sect-t{font-size:14px} #matchInfo{flex:1 0 100%;margin-left:0}
+  .mtab th,.mtab td{padding:6px 4px}
+  .rb{padding:2px 6px;font-size:11.5px} .mvpb{font-size:9px;padding:2px 4px}}
 .langsel{position:relative}
 .lbtn{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:20px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .lbtn:hover{border-color:var(--acc)}
 .lbtn .cv{color:var(--mut);font-size:10px}
+.lbtn .lflag{font-size:14px;line-height:1}
 .lmenu{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:70;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;box-shadow:0 14px 34px rgba(0,0,0,.45);min-width:236px}
 .lmt{font-size:11px;color:var(--mut);font-weight:700;margin:2px 4px 8px}
 .lmg{display:grid;grid-template-columns:1fr 1fr;gap:4px}
@@ -150,7 +156,20 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .lgi .fl{font-size:14px}
 .lgi .ck{margin-left:auto;color:var(--acc);font-weight:800}
 /* 좁은 화면: 언어 버튼을 첫 줄 오른쪽 끝, 검색창은 아래 줄 전체 */
-@media(max-width:700px){.langsel{order:1;margin-left:auto} .search{order:2;width:100%;flex:1 0 100%}}
+@media(max-width:700px){
+  .hd{gap:8px}
+  .logo{font-size:18px;gap:7px} .logo .emb{width:24px;height:24px}
+  .badge,.owner,.lbtn{font-size:11px;padding:3px 9px}
+  .owner svg{width:12px;height:12px}
+  .langsel{order:1;margin-left:auto} .search{order:2;width:100%;flex:1 0 100%}
+}
+/* 아주 좁은 화면: 언어 이름은 숨기고 국기만 (메뉴에는 이름이 다 나옴) */
+@media(max-width:430px){
+  .hd{gap:6px}
+  .lbtn .lname{display:none} .lbtn{padding:4px 8px} .lbtn .lflag{font-size:15px}
+  .owner svg{display:none} .owner{gap:4px}
+  .badge,.owner{padding:3px 8px}
+}
 .lmenu{max-width:calc(100vw - 24px)}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </style>
@@ -178,7 +197,7 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
       <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg> <span id="searchLbl"></span></button>
   </div>
   <div class="langsel">
-    <button class="lbtn" id="langBtn" onclick="toggleLangMenu(event)"><span id="langLbl"></span><span class="cv">▾</span></button>
+    <button class="lbtn" id="langBtn" onclick="toggleLangMenu(event)"><span class="lflag" id="langFlag"></span><span class="lname" id="langLbl"></span><span class="cv">▾</span></button>
     <div class="lmenu" id="langMenu" onclick="event.stopPropagation()">
       <div class="lmt" id="langTitle"></div>
       <div class="lmg" id="langGrid"></div>
@@ -240,7 +259,8 @@ function applyStatic(){
   document.getElementById('q').placeholder=t('search_ph');
   document.getElementById('searchLbl').textContent=t('search');
   document.getElementById('footerTxt').textContent=t('footer',{n:D.generated_count.toLocaleString()});
-  document.getElementById('langLbl').textContent=(L.flag||'')+' '+(L.label||LANG);
+  document.getElementById('langFlag').textContent=L.flag||'';
+  document.getElementById('langLbl').textContent=L.label||LANG;
   document.getElementById('langTitle').textContent=t('lang_title');
   document.getElementById('langGrid').innerHTML=LANG_ORDER.filter(c=>I18N[c]).map(c=>
     `<button type="button" class="lgi${c===LANG?' on':''}" onclick="setLang('${c}')"><span class="fl">${I18N[c].flag}</span>${I18N[c].label}${c===LANG?'<span class="ck">✓</span>':''}</button>`).join('');
@@ -369,6 +389,7 @@ function renderPlayer(id){
     <div class="stat"><div class="k">${t('c_mvp')}</div><div class="v">${fmt(p.mvp)}</div></div>
     <div class="stat"><div class="k">${t('s_playtime')}</div><div class="v">${p.pt!=null?t('hours_unit',{n:p.pt}):'-'}</div></div>
     <div class="stat"><div class="k">${t('s_damage')}</div><div class="v" style="font-size:16px">${fmt(p.dmg)}</div></div>
+    ${p.pm?`<div class="stat"><div class="k">${t('s_pro_matches')}</div><div class="v">${fmt(p.pm)}</div></div>`:''}
   </div></div>`;
   // 랭킹 (모드 + 캐릭터)
   const rk=p.rk||{};
@@ -406,10 +427,25 @@ function renderPlayer(id){
   else { h+=`<div class="card"><div class="empty">${t('static_hint')}</div></div>`; }
   h+='</div>';
   app.innerHTML=h; window.scrollTo(0,0);
+  const mi=document.getElementById('matchInfo');
+  if(mi&&p.matches&&p.matches.length) mi.innerHTML=recentSummary(p.matches);
   // 실시간 모드면 경기 자동 로드 (한 번만)
   if(window.LIVE && !p.matches && !p._tried){ p._tried=true; refreshPlayer(id); }
 }
 
+// 최근 경기에서 프로/캐주얼 전적을 계산한다.
+// 게임은 프로 전용 승수를 세지 않아서(카운터 자체가 없음) 통산은 못 구하고,
+// 서버가 주는 최근 25경기 범위에서만 낼 수 있다.
+function recentSummary(matches){
+  if(!matches||!matches.length) return '';
+  const s={1:{w:0,l:0},2:{w:0,l:0}};
+  matches.forEach(m=>{const b=s[m.type]; if(b) b[m.win?'w':'l']++;});
+  const part=k=>{const b=s[k], n=b.w+b.l; if(!n) return null;
+    const wr=Math.round(b.w/n*1000)/10;
+    return `${k===1?t('tab_pro'):t('tab_casual')} <b>${b.w}${t('win')} ${b.l}${t('lose')}</b> (${wr}%)`;};
+  const arr=[part(1),part(2)].filter(Boolean);
+  return arr.length?`${t('recent_n',{n:matches.length})} · ${arr.join(' · ')}`:'';
+}
 function matchesHtml(matches){
   const typeName=v=>v===1?t('tab_pro'):v===2?t('tab_casual'):'-';
   const ago=ts=>{if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);

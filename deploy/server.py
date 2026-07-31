@@ -103,18 +103,32 @@ CACHE={"boards":{},"board_meta":{},"board_labels":[],"hero_labels":[],
        "players":{},"player_ranks":{},"season":SEASON,"last_refresh":0}
 NAME_HIST={}
 # ── 닉네임 이력 (Upstash Redis 단일키 저장 + 백그라운드 전원검사) ──
-UPSTASH_URL=os.environ.get("UPSTASH_URL","").rstrip("/")
-UPSTASH_TOKEN=os.environ.get("UPSTASH_TOKEN","")
+# Upstash 콘솔은 UPSTASH_REDIS_REST_URL/TOKEN 이라는 이름으로 알려준다.
+# 그 이름 그대로 넣는 실수가 잦아서 둘 다 받는다.
+def _env(*names):
+    for n in names:
+        v=os.environ.get(n)
+        if v: return v.strip()
+    return ""
+UPSTASH_URL=_env("UPSTASH_URL","UPSTASH_REDIS_REST_URL").rstrip("/")
+UPSTASH_TOKEN=_env("UPSTASH_TOKEN","UPSTASH_REDIS_REST_TOKEN")
+REDIS_STATE={"ok":None,"err":"미시도"}   # /api/status 로 연결 상태 확인용
 HIST_KEY="rsgg:namehist"
 SWEEP_SEC=int(os.environ.get("SWEEP_SEC","21600"))  # 전원 이름검사 주기(기본 6시간)
 def redis_cmd(*args):
-    if not UPSTASH_URL or not UPSTASH_TOKEN: return None
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        REDIS_STATE.update(ok=False,err="환경변수 없음"); return None
     try:
         req=urllib.request.Request(UPSTASH_URL+"/",data=json.dumps(list(args)).encode(),
             headers={"Authorization":"Bearer "+UPSTASH_TOKEN,"Content-Type":"application/json"})
         with urllib.request.urlopen(req,timeout=8) as r:
-            return json.loads(r.read().decode()).get("result")
-    except Exception: return None
+            res=json.loads(r.read().decode()).get("result")
+        REDIS_STATE.update(ok=True,err="")
+        return res
+    except Exception as e:
+        code=getattr(e,"code",None)
+        REDIS_STATE.update(ok=False,err=f"{type(e).__name__}{'/'+str(code) if code else ''}")
+        return None
 def hist_load():
     raw=redis_cmd("GET",HIST_KEY)
     if raw:
@@ -154,6 +168,11 @@ def load_disk():
                 CACHE["players"][pid]=to_compact_from_raw(v)
         print(f"플레이어 {len(CACHE['players'])}명 로드")
     except Exception as e: print("플레이어 로드 실패:",e)
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        redis_cmd("PING")
+        print("Upstash 연결:", "성공" if REDIS_STATE["ok"] else "실패("+REDIS_STATE["err"]+")")
+    else:
+        print("Upstash 미설정 — 닉네임 이력은 재배포시 초기화됩니다")
     hist_load()
     with LOCK:
         for pid,rec in NAME_HIST.items():
@@ -297,7 +316,7 @@ def parse_matches(jsons, pid):
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
             "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":str(m.get("LevelId") or ""),"dmg":me.get("Damage"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
-    return out[:20]
+    return out[:25]
 
 def fetch_matches(s, match_ids, pid):
     if not match_ids: return []
@@ -351,7 +370,9 @@ class H(http.server.BaseHTTPRequestHandler):
         u=urllib.parse.urlparse(self.path); path=u.path
         if path=="/api/status":
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
-                "players":len(CACHE["players"]),"boards":len(CACHE["boards"]),"season":CACHE["season"]}
+                "players":len(CACHE["players"]),"boards":len(CACHE["boards"]),"season":CACHE["season"],
+                "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
+                "names":len(NAME_HIST)}
             return self._send(200,json.dumps(st))
         if path=="/api/search":
             qs=urllib.parse.parse_qs(u.query); q=(qs.get("q",[""])[0] or "").strip().lower()
