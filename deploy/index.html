@@ -297,11 +297,12 @@ function matchesHtml(matches){
       <td class="num hcol">${num(m.myrt)}</td>
       <td class="muted">${ago(m.ts)}</td></tr>`;
     const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>`).join('');
-    const t1=m.players.filter(x=>x.tm===1),t2=m.players.filter(x=>x.tm===2);
+    const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
+    const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
-        <div style="flex:1;min-width:150px"><div class="muted" style="font-size:11px;margin-bottom:4px">팀 1</div>${side(t1)}</div>
-        <div style="flex:1;min-width:150px"><div class="muted" style="font-size:11px;margin-bottom:4px">팀 2</div>${side(t2)}</div>
+        <div style="flex:1;min-width:150px"><div style="font-size:11px;margin-bottom:4px"><span class="muted">우리 팀 · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
+        <div style="flex:1;min-width:150px"><div style="font-size:11px;margin-bottom:4px"><span class="muted">상대 팀 · </span><b>${m.ens}</b></div>${side(t2)}</div>
       </div></td></tr>`;
   });
   return h+'</tbody></table></div>';
