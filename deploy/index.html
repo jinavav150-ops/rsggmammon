@@ -93,6 +93,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .hrow .hm b{color:var(--tx);font-weight:700}
 .hrow .pk{flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:1px}
 .hrow .pk .pkl{font-size:11px;color:var(--mut);font-weight:700;letter-spacing:.3px}
+.hi{width:22px;height:26px;border-radius:5px;object-fit:cover;vertical-align:middle;margin-right:5px;background:var(--panel2)}
+.hi-lg{width:34px;height:40px;border-radius:7px}
+.hrow>div:first-child{flex:0 0 auto;display:flex;align-items:center;white-space:nowrap}
+.sbp{display:flex;flex-wrap:wrap;gap:4px;margin:2px 0 7px 12px}
+.sbp i{font-style:normal;font-size:10.5px;line-height:1.5;color:var(--mut);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.sbp .hh{font-size:10.5px;color:var(--mut);font-weight:700;align-self:center}
 .hrow .pk .pki{font-size:11.5px;color:var(--tx);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px}
 /* 좁은 화면: 최근경기 덜 중요한 열 접기 */
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
@@ -156,6 +162,8 @@ const HERO_KR={Dread:"드레드",Khan:"칸",Vector:"벡터",Oni:"오니",Remedy:
 const hk=n=>HERO_KR[n]||n;  // 캐릭명만 한글로 (닉네임 등은 원본 유지)
 const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
+function heroImg(n,cls){const f=String(n||'').toLowerCase();if(!f||f[0]==='#')return '';
+  return `<img class="hi ${cls||''}" src="img/hero/${f}.png" alt="" loading="lazy" onerror="this.style.display='none'">`;}
 function medalCls(r){return r===1?'r1':r===2?'r2':r===3?'r3':''}
 
 let curBoard='프로', curPage=0, curRegion='', curFilter='';
@@ -262,7 +270,7 @@ function renderPlayer(id){
     h+='<div class="sect-t">'+ICON.target+' 캐릭터별 상세 (플레이시간 순)</div><div class="card">';
     for(const hn of hero_list){const hd=H[hn];const seasonRank=rk[hn]?rk[hn][0].toLocaleString()+'위':null;
       h+=`<div class="hrow">
-        <div><span class="hn">${hk(hn)}</span><span class="lv">Lv.${hd.lv??'-'}</span></div>
+        <div><span class="hn">${heroImg(hn,'hi-lg')}${hk(hn)}</span><span class="lv">Lv.${hd.lv??'-'}</span></div>
         <div class="hm"><span>⏱ ${hd.pt!=null?hd.pt+'시':'-'}</span><span>레이팅 <b>${hd.rt!=null?hd.rt.toLocaleString():'-'}</b></span>${seasonRank?`<span>시즌 ${seasonRank}</span>`:''}${hd.sk?`<span>🎨 ${esc(hd.sk)}</span>`:''}</div>
         ${(hd.pk&&hd.pk.length)?`<div class="pk"><span class="pkl">특성</span>${hd.pk.map(x=>`<span class="pki">${esc(x)}</span>`).join('')}</div>`:''}
       </div>`;
@@ -294,13 +302,14 @@ function matchesHtml(matches){
     const mvp=m.mvpme?'<span class="mvpb">MVP</span>':'';
     h+=`<tr class="mrow ${cls}" onclick="toggleMatch(${i})">
       <td><div style="display:flex;align-items:center;gap:5px">${rb}${mvp}<span class="muted" style="font-variant-numeric:tabular-nums">${m.mys}-${m.ens}</span></div></td>
-      <td class="hcell">${esc(hk(m.myhero))}</td>
+      <td class="hcell">${heroImg(m.myhero)}${esc(hk(m.myhero))}</td>
       <td>${esc(m.map)||'-'} <span class="muted hcol">· ${typeName(m.type)} · ${dur(m.dur)}</span></td>
       <td class="num">${m.myk??'-'} / ${m.myd??'-'}</td>
       <td class="num hcol">${num(m.dmg)}</td>
       <td class="num hcol">${num(m.myrt)}</td>
       <td class="muted">${ago(m.ts)}</td></tr>`;
-    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>`).join('');
+    const perksOf=x=>(x.hp&&x.hp.length)?x.hp.map(g=>`<div class="sbp">${x.hp.length>1?`<span class="hh">${esc(hk(g.h))}</span>`:''}${g.pk.map(t=>`<i>${esc(t)}</i>`).join('')}</div>`).join(''):'';
+    const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
     const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">

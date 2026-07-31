@@ -253,6 +253,13 @@ def sweep_scheduler():
 
 def hero_name(hid): return HEROES.get(str(hid),f"#{hid}")
 
+def match_perks(pr):
+    """그 경기에 실제로 사용한 퍽. 한 경기에서 캐릭터를 바꿨으면 캐릭터별로 나온다."""
+    out=[]
+    for hr in (pr.get("HeroResultData") or []):
+        names=[PERK_KR.get(str(x)) or f"#{x}" for x in (hr.get("Perks") or []) if x]
+        if names: out.append({"h":hero_name(hr.get("HeroId")),"pk":names})
+    return out
 def parse_matches(jsons, pid):
     out=[]
     for js in jsons:
@@ -263,7 +270,7 @@ def parse_matches(jsons, pid):
         if not me: continue
         players=[{"id":p.get("PlayerId"),"n":p.get("Name",""),"tm":p.get("Team"),"h":hero_name(p.get("LastUsedHeroId")),
                   "rt":p.get("Rating"),"mvp":int(p.get("MvpPoints",0)),"k":p.get("Eliminations"),"d":p.get("Deaths"),
-                  "mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid}
+                  "mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid,"hp":match_perks(p)}
                  for p in prs]
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
@@ -313,9 +320,11 @@ def live_player(pid):
 # ── 웹서버 ───────────────────────────────────────────
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
-    def _send(self,code,body,ctype="application/json"):
+    def _send(self,code,body,ctype="application/json",cache=None):
         self.send_response(code); self.send_header("Content-Type",ctype)
-        self.send_header("Access-Control-Allow-Origin","*"); self.end_headers()
+        self.send_header("Access-Control-Allow-Origin","*")
+        if cache: self.send_header("Cache-Control",cache)
+        self.end_headers()
         self.wfile.write(body if isinstance(body,bytes) else body.encode("utf-8"))
     def do_GET(self):
         u=urllib.parse.urlparse(self.path); path=u.path
@@ -350,8 +359,12 @@ class H(http.server.BaseHTTPRequestHandler):
         fn="index.html" if path in ("/","") else path.lstrip("/")
         fp=os.path.join(HERE,fn)
         if os.path.isfile(fp) and os.path.abspath(fp).startswith(HERE):
-            ct="text/html" if fn.endswith(".html") else "application/javascript" if fn.endswith(".js") else "text/plain"
-            return self._send(200,open(fp,"rb").read(),ct)
+            ct=("text/html" if fn.endswith(".html") else "application/javascript" if fn.endswith(".js")
+                else "image/png" if fn.endswith(".png") else "image/webp" if fn.endswith(".webp")
+                else "image/svg+xml" if fn.endswith(".svg") else "text/plain")
+            # html/js는 항상 새로 받게(수정 후 옛 화면 방지), 이미지는 오래 캐시
+            cache="public, max-age=604800" if fn.startswith("img/") else "no-cache"
+            return self._send(200,open(fp,"rb").read(),ct,cache)
         self._send(404,"not found","text/plain")
 
 def main():
