@@ -56,6 +56,12 @@ def skin_name(v):
     nm=TN.get(str(v))
     if not nm: return None
     p=nm.split("_"); return " ".join(p[2:]) if len(p)>2 else nm
+def perk_of(pid):
+    """퍽ID → [한글이름, 분류(0~8), 능력아이콘]. 옛 형식(문자열/2칸)도 동작."""
+    v=PERK_KR.get(str(pid))
+    if isinstance(v,list): return [v[0], v[1] if len(v)>1 else 0, v[2] if len(v)>2 else ""]
+    if isinstance(v,str): return [v,0,""]
+    return [f"#{pid}",0,""]
 def perk_list(hv):
     """장착 퍽을 슬롯 순서대로 한글명 리스트로. (퍽은 counter가 아니라 perk_slots에 있음)"""
     slots=hv.get("perk_slots") or {}
@@ -63,7 +69,7 @@ def perk_list(hv):
     for sid in sorted(slots, key=lambda x: int(x) if str(x).isdigit() else 0):
         p=(slots.get(sid) or {}).get("selected_perk_id")
         if not p: continue
-        out.append(PERK_KR.get(str(p)) or f"#{p}")
+        out.append(perk_of(p))
     return out
 def parse_acc(acc):
     cc=(acc.get("counters_state") or {}).get("counter_collection",{})
@@ -149,7 +155,7 @@ def to_compact_from_raw(v):
     heroes={}
     for hn,hd in (v.get("heroes") or {}).items():
         heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin"),
-            "pk":[PERK_KR.get(str(x)) or f"#{x}" for x in (hd.get("pk") or [])]}
+            "pk":[perk_of(x) for x in (hd.get("pk") or [])]}
     return {"n":v.get("name",""),"r":v.get("region",""),"lv":v.get("level"),"wr":v.get("winrate"),
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
         "d":v.get("deaths"),"dmg":v.get("damage"),"heal":v.get("heal"),"db":v.get("double"),
@@ -257,7 +263,7 @@ def match_perks(pr):
     """그 경기에 실제로 사용한 퍽. 한 경기에서 캐릭터를 바꿨으면 캐릭터별로 나온다."""
     out=[]
     for hr in (pr.get("HeroResultData") or []):
-        names=[PERK_KR.get(str(x)) or f"#{x}" for x in (hr.get("Perks") or []) if x]
+        names=[perk_of(x) for x in (hr.get("Perks") or []) if x]
         if names: out.append({"h":hero_name(hr.get("HeroId")),"pk":names})
     return out
 def parse_matches(jsons, pid):

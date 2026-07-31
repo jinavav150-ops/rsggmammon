@@ -96,10 +96,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .hi{width:22px;height:26px;border-radius:5px;object-fit:cover;vertical-align:middle;margin-right:5px;background:var(--panel2)}
 .hi-lg{width:34px;height:40px;border-radius:7px}
 .hrow>div:first-child{flex:0 0 auto;display:flex;align-items:center;white-space:nowrap}
-.sbp{display:flex;flex-wrap:wrap;gap:4px;margin:2px 0 7px 12px}
-.sbp i{font-style:normal;font-size:10.5px;line-height:1.5;color:var(--mut);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.sbp{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:3px 0 8px 12px}
 .sbp .hh{font-size:10.5px;color:var(--mut);font-weight:700;align-self:center}
-.hrow .pk .pki{font-size:11.5px;color:var(--tx);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+.pkb{width:30px;height:30px;padding:0;border:none;border-radius:7px;background:var(--c,#4a5060);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.pkb img{width:20px;height:20px;object-fit:contain;pointer-events:none}
+.pkb:hover{filter:brightness(1.2)}
+.pkb:active{transform:scale(.93)}
+.pkb.sm{width:25px;height:25px;border-radius:6px}
+.pkb.sm img{width:17px;height:17px}
+#perkTip{position:fixed;z-index:60;display:none;max-width:min(280px,88vw);background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:12.5px;line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.4)}
 /* 좁은 화면: 최근경기 덜 중요한 열 접기 */
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none} .mtab th,.mtab td{padding:7px 6px;font-size:12px}}
 footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
@@ -138,6 +143,7 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
   Ricochet Squad 비공식 전적검색 · 데이터 <span id="cnt"></span>명 · © 2026 MAMMON. All rights reserved.
 </footer>
 
+<div id="perkTip"></div>
 <script src="site_data.js"></script>
 <script>
 const D=window.DATA, P=D.players, B=D.boards, BM=D.board_meta;
@@ -164,6 +170,26 @@ const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
 function heroImg(n,cls){const f=String(n||'').toLowerCase();if(!f||f[0]==='#')return '';
   return `<img class="hi ${cls||''}" src="img/hero/${f}.png" alt="" loading="lazy" onerror="this.style.display='none'">`;}
+// 퍽 분류(0~8) → 게임 아이콘 + 게임 색상
+const PERK_ICON=['damage','survival','timings','movement','size','amount1','cooldown','amount2','amount3'];
+const PERK_COLOR=['#a8280f','#0d8e6c','#7b32ef','#356fb4','#b56d2e','#20a099','#b08c1d','#20a099','#20a099'];
+function perkChips(arr,sm){return (arr||[]).map(p=>{
+  const a=Array.isArray(p); const n=a?p[0]:p;
+  const t=(a&&p[1]>=0&&p[1]<PERK_ICON.length)?p[1]:0;
+  const ic=a&&p[2];   // 능력 아이콘(진짜 게임 아이콘). 없으면 분류 아이콘으로 대체
+  const src=ic?`img/ability/${ic}.png`:`img/perk/${PERK_ICON[t]}.png`;
+  return `<button type="button" class="pkb${sm?' sm':''}" style="--c:${PERK_COLOR[t]}" data-t="${esc(n)}" title="${esc(n)}" onclick="showPerk(event,this)"><img src="${src}" alt=""></button>`;
+}).join('');}
+window.showPerk=(ev,el)=>{ev.stopPropagation();const tip=document.getElementById('perkTip');
+  if(tip.style.display==='block'&&tip._el===el){tip.style.display='none';return;}
+  tip.textContent=el.dataset.t||''; tip._el=el; tip.style.display='block'; tip.style.left='0px'; tip.style.top='0px';
+  const r=el.getBoundingClientRect(), w=tip.offsetWidth, h=tip.offsetHeight;
+  let l=Math.max(8,Math.min(r.left+r.width/2-w/2, innerWidth-w-8));
+  let t=r.top-h-8; if(t<8) t=r.bottom+8;
+  tip.style.left=l+'px'; tip.style.top=t+'px';};
+const hidePerkTip=()=>{const t=document.getElementById('perkTip'); if(t)t.style.display='none';};
+document.addEventListener('click',hidePerkTip);
+window.addEventListener('scroll',hidePerkTip,true);
 function medalCls(r){return r===1?'r1':r===2?'r2':r===3?'r3':''}
 
 let curBoard='프로', curPage=0, curRegion='', curFilter='';
@@ -272,7 +298,7 @@ function renderPlayer(id){
       h+=`<div class="hrow">
         <div><span class="hn">${heroImg(hn,'hi-lg')}${hk(hn)}</span><span class="lv">Lv.${hd.lv??'-'}</span></div>
         <div class="hm"><span>⏱ ${hd.pt!=null?hd.pt+'시':'-'}</span><span>레이팅 <b>${hd.rt!=null?hd.rt.toLocaleString():'-'}</b></span>${seasonRank?`<span>시즌 ${seasonRank}</span>`:''}${hd.sk?`<span>🎨 ${esc(hd.sk)}</span>`:''}</div>
-        ${(hd.pk&&hd.pk.length)?`<div class="pk"><span class="pkl">특성</span>${hd.pk.map(x=>`<span class="pki">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(hd.pk&&hd.pk.length)?`<div class="pk"><span class="pkl">특성</span>${perkChips(hd.pk)}</div>`:''}
       </div>`;
     }
     h+='</div>';
@@ -308,7 +334,7 @@ function matchesHtml(matches){
       <td class="num hcol">${num(m.dmg)}</td>
       <td class="num hcol">${num(m.myrt)}</td>
       <td class="muted">${ago(m.ts)}</td></tr>`;
-    const perksOf=x=>(x.hp&&x.hp.length)?x.hp.map(g=>`<div class="sbp">${x.hp.length>1?`<span class="hh">${esc(hk(g.h))}</span>`:''}${g.pk.map(t=>`<i>${esc(t)}</i>`).join('')}</div>`).join(''):'';
+    const perksOf=x=>(x.hp&&x.hp.length)?x.hp.map(g=>`<div class="sbp">${x.hp.length>1?`<span class="hh">${esc(hk(g.h))}</span>`:''}${perkChips(g.pk,1)}</div>`).join(''):'';
     const side=arr=>arr.map(x=>`<div style="${x.me?'font-weight:800;color:var(--acc2)':''}">${x.mv?'👑 ':''}${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)} <span class="muted">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
     const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
@@ -360,6 +386,7 @@ function doSearch(){const q=document.getElementById('q').value.trim();if(q)locat
 document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 
 function render(){
+  hidePerkTip();
   const h=decodeURIComponent(location.hash||'');
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
