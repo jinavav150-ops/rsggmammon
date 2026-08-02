@@ -352,12 +352,25 @@ function tabsHtml(){
   return h;
 }
 
+// 지역 선택. 예전엔 onchange에서 render()로 화면을 통째로 다시 그렸는데, 그러면 선택하는
+// 순간 select 자신이 지워졌다 새로 생긴다. 그 사이에 브라우저(특히 모바일 피커)가 선택을
+// 흘려버려서 "한 번 골라도 바로 안 바뀌는" 증상이 났다. 이제 select는 그대로 두고 목록만 바꾼다.
+// input/change를 둘 다 받는 건 기기에 따라 한쪽만 오는 경우가 있어서다(중복은 값 비교로 걸러짐).
 function regionOptions(){
   const set=new Set(); for(const id in P) if(P[id].r) set.add(P[id].r);
-  let h=`<select onchange="curRegion=this.value;curPage=0;render()"><option value="">${t('all_regions')}</option>`;
+  let h=`<select oninput="onRegionChange(this)" onchange="onRegionChange(this)"><option value="">${t('all_regions')}</option>`;
   for(const r of [...set].sort()) h+=`<option value="${r}" ${curRegion===r?'selected':''}>${regionName(r)}</option>`;
   return h+'</select>';
 }
+window.onRegionChange=el=>{
+  if(curRegion===el.value) return;
+  curRegion=el.value; curPage=0;
+  const body=document.getElementById('boardBody');
+  if(!body){ render(); return; }
+  body.innerHTML=boardBodyHtml();
+  const cnt=document.getElementById('boardCount');
+  if(cnt) cnt.innerHTML=boardCountHtml();
+};
 
 // 3인 조합 순위. comps.json(로컬에서 미리 집계한 것)을 그대로 표로 그린다.
 // 키는 pro_human / pro_bot / casual_human / casual_bot. 봇 낀 경기가 전체의 70%를 넘어서
