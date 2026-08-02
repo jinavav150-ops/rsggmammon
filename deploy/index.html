@@ -610,8 +610,24 @@ function renderBoard(){
   app.innerHTML=h;
 }
 
+// site_data.js에는 목록에 필요한 필드만 들어있다(D.slim). 프로필을 처음 열 때
+// 나머지(캐릭터별 상세·최근경기·킬/데미지)를 /api/detail 로 한 번 받아 P에 합친다.
+// 서버가 메모리 캐시에서 바로 주므로 1KB·즉시. 실패해도 있는 정보만으로 그린다.
+function fetchDetail(id,p){
+  p._d=1;                                   // 한 번만 시도 (실패시 무한루프 방지)
+  const again=()=>{ if(location.hash==='#/player/'+id) renderPlayer(id); };
+  fetch('/api/detail/'+encodeURIComponent(id))
+    .then(r=>r.json())
+    .then(j=>{ if(j.ok&&j.player) P[id]=Object.assign(P[id]||{},j.player,{_d:1}); again(); })
+    .catch(again);
+}
 function renderPlayer(id){
   const p=P[id];
+  if(p && D.slim && !p.h && !p._d){
+    fetchDetail(id,p);
+    app.innerHTML=`<div class="card"><div class="empty">${t('loading')}</div></div>`;
+    return;
+  }
   if(!p){
     if(window.LIVE){ app.innerHTML=`<div class="card"><div class="empty">${t('loading')}</div></div>`;
       fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json()).then(j=>{ if(j.ok&&j.player){P[id]=j.player; if(location.hash==='#/player/'+id) renderPlayer(id);} else app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; }).catch(()=>{app.innerHTML=`<div class="card"><div class="empty">${t('load_error')}</div></div>`;});

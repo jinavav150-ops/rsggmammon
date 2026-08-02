@@ -427,16 +427,25 @@ def apply_leaderboards(lb):
         CACHE.update({"seasons":seasons,"sdata":sdata,"player_ranks":ranks,
                       "last_refresh":int(time.time())})
 
+# site_data.js에 넣을 유저 필드. **목록·검색에 필요한 것만** 넣는다.
+# 나머지(캐릭터별 상세 h, 최근경기 rm, 킬·데미지 등)는 프로필을 열 때 /api/detail 로 받는다.
+# 전에는 8,180명 전체 프로필을 첫 화면에서 통째로 보냈다 → 14.5MB(gzip 4.1MB).
+# 그중 캐릭터별 상세만 9MB인데 목록에선 한 번도 안 쓴다.
+SLIM_KEYS=("n","r","lv","wr","mvp","prev")
+def slim_player(p):
+    q={k:p[k] for k in SLIM_KEYS if k in p and p[k] not in (None,[],"")}
+    return q
+
 def build_site_data():
     with LOCK:
         players={}
         for pid,p in CACHE["players"].items():
-            q=dict(p); q["rk"]=CACHE["player_ranks"].get(pid,{}); players[pid]=q
+            q=slim_player(p); q["rk"]=CACHE["player_ranks"].get(pid,{}); players[pid]=q
         pmeta={}
         for pid,v in PERK_KR.items():
             if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
             elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
-        out={"perk_meta":pmeta,"comps":COMPS,"hstat":HEROSTAT,
+        out={"perk_meta":pmeta,"comps":COMPS,"hstat":HEROSTAT,"slim":True,
             "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)
@@ -619,6 +628,15 @@ class H(http.server.BaseHTTPRequestHandler):
                             "rk":CACHE["player_ranks"].get(pid,{})})   # 랭킹은 별도 캐시에 있음
                         if len(res)>=300: break
             return self._send(200,json.dumps({"results":res}))
+        if path.startswith("/api/detail/"):
+            # 프로필 상세를 서버 메모리 캐시에서 즉시 준다(게임서버 접속 없음, 1KB대).
+            # site_data.js에서 뺀 부분을 여기로 돌린 것. 실시간 최신값이 필요하면 /api/player/.
+            pid=urllib.parse.unquote(path[len("/api/detail/"):])
+            with LOCK:
+                p=CACHE["players"].get(pid)
+                q=(dict(p) if p else None)
+                if q is not None: q["rk"]=CACHE["player_ranks"].get(pid,{})
+            return self._send(200 if q else 404,json.dumps({"ok":bool(q),"player":q}))
         if path.startswith("/api/player/"):
             pid=urllib.parse.unquote(path[len("/api/player/"):])
             try:
