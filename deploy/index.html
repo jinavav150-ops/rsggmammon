@@ -59,6 +59,19 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mv b{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
 .mv i{font-style:normal;font-weight:800;color:var(--win)}
 .warn{color:var(--lose)}                       /* 표본 얕음 경고 */
+/* 특성 슬롯 비교: 슬롯 4개 × 선택지 2개 */
+.slotrow{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.slotrow:last-child{border-bottom:0}
+.slotrow>.sl{flex:0 0 62px;font-size:11.5px;font-weight:700;color:var(--mut);padding-top:6px}
+.slotrow>.opts{flex:1 1 200px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;min-width:0}
+.opt{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:10px;padding:7px 9px;min-width:0}
+.opt.best{border-color:var(--win)}
+.opt img{width:22px;height:22px;flex:none}
+.opt .on{flex:1 1 auto;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opt .ov{flex:none;text-align:right;font-size:11px;color:var(--mut);line-height:1.25}
+.opt .ov b{display:block;font-size:13px}
+.bld{display:flex;gap:3px;align-items:center}
 .card>.row-filter{padding:12px 12px 0;margin-bottom:12px}   /* 카드 안에 들어간 선택줄 */
 .name{font-weight:700}
 .reg{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:2px}
@@ -395,6 +408,50 @@ function hasTiers(){
 window.setTierMode=m=>{tierMode=m;render();};
 window.setTierBots=b=>{tierBots=b;render();};
 window.setTierHero=v=>{tierHero=v;render();};
+// 특성(퍽) 빌드. perks.json은 캐릭터마다 슬롯 4개 × 선택지 2개를 그대로 담고 있다.
+// 슬롯별로 둘 중 뭐가 나은지 나란히 보여주는 게 핵심이고, 4개 다 낀 빌드 순위는 그 아래.
+const SLOT_LABEL=['slot_ab1','slot_ab2','slot_ult','slot_wep'];
+function perksHtml(splitKey,hero){
+  const S=(D.pstat||{})[splitKey];
+  const hp=S&&S.heroes&&S.heroes[hero];
+  if(!hp) return '';
+  let h=`<div class="sect-t">${ICON.target} ${t('perks_title')} <span class="muted" style="font-size:12px;font-weight:400">${hk(hero)} · ${t('perks_note')} · ${t('samples',{n:hp.n.toLocaleString()})}</span></div>`;
+  // 슬롯별 비교
+  h+='<div class="card">';
+  let drew=false;
+  hp.slots.forEach((opts,i)=>{
+    if(!opts||!opts.length) return;
+    drew=true;
+    const best=Math.max(...opts.map(o=>o[3]));
+    h+=`<div class="slotrow"><div class="sl">${t(SLOT_LABEL[i])}</div><div class="opts">`;
+    for(const o of opts){
+      const m=PMETA[String(o[0])]||[]; const ty=(m[0]>=0&&m[0]<=8)?m[0]:0;
+      h+=`<div class="opt ${o[3]===best&&opts.length>1?'best':''}">
+        <img src="img/perk/${ty}.png" alt="">
+        <span class="on" title="${esc(perkName(o[0]))}">${esc(perkName(o[0]))}</span>
+        <span class="ov"><b class="wr ${wrClass(o[3])}">${o[3]}%</b>${o[4]}% · ${o[1].toLocaleString()}</span></div>`;
+    }
+    h+='</div></div>';
+  });
+  h+='</div>';
+  if(!drew) h='';
+  // 4슬롯 전부 낀 빌드 순위
+  const bl=(hp.builds||[]);
+  if(bl.length){
+    h+=`<div class="sect-t">${ICON.trophy} ${t('builds_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('builds_note',{n:S.min_build})}</span></div>`;
+    h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_build')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+    bl.slice(0,8).forEach((b,i)=>{
+      const ids=b[0].split('-');
+      h+=`<tr><td class="rank ${medalCls(i+1)}">${i+1}</td>
+        <td><span class="bld">${perkChips(ids,1)}</span></td>
+        <td class="num wr ${wrClass(b[3])}">${b[3]}%</td>
+        <td class="num hcol muted">${b[4]}%</td>
+        <td class="num">${b[1].toLocaleString()}</td></tr>`;
+    });
+    h+='</tbody></table></div>';
+  }
+  return h;
+}
 function renderTiers(){
   const S=D.hstat||{};
   const has=k=>S[k]&&S[k].heroes&&S[k].heroes.length;
@@ -446,6 +503,9 @@ function renderTiers(){
         <td class="num wr ${wrClass(v[1])}">${v[1]}%</td><td class="num">${v[0].toLocaleString()}</td></tr>`;
     h+='</tbody></table></div>';
   }
+
+  // 2-2) 고른 캐릭터의 추천 특성 — 슬롯 4개 × 선택지 2개라 바로 비교가 된다
+  h+=perksHtml(key(tierMode,tierBots),tierHero);
 
   // 3) 2인 듀오
   if(d.duos&&d.duos.length){
