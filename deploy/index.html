@@ -360,20 +360,40 @@ function regionOptions(){
 }
 
 // 3인 조합 순위. comps.json(로컬에서 미리 집계한 것)을 그대로 표로 그린다.
-let compMode='pro';
+// 키는 pro_human / pro_bot / casual_human / casual_bot. 봇 낀 경기가 전체의 70%를 넘어서
+// 섞어 놓으면 사람 경기 성향이 묻힌다. 그래서 나눠서 보여준다.
+let compMode='pro', compBots='human';
 window.setCompMode=m=>{compMode=m;render();};
+window.setCompBots=b=>{compBots=b;render();};
 function renderComps(){
   const C=D.comps||{};
   let h=tabsHtml();
   const has=k=>C[k]&&C[k].comps&&C[k].comps.length;
-  if(!has('pro')&&!has('casual')) { app.innerHTML=h+`<div class="card"><div class="empty">${t('comps_empty')}</div></div>`; return; }
-  if(!has(compMode)) compMode = has('pro')?'pro':'casual';
-  const d=C[compMode]||{comps:[],matches:0};
+  const key=(m,b)=>m+'_'+b;
+  // 옛 형식(pro/casual만 있는 comps.json)도 그릴 수 있게
+  const legacy=!C['pro_human']&&!C['casual_human'];
+  const K=()=>legacy?compMode:key(compMode,compBots);
+  const anyData=legacy?(has('pro')||has('casual'))
+    :['pro','casual'].some(m=>['human','bot'].some(b=>has(key(m,b))));
+  if(!anyData){ app.innerHTML=h+`<div class="card"><div class="empty">${t('comps_empty')}</div></div>`; return; }
+  if(!has(K())){
+    outer: for(const m of ['pro','casual']) for(const b of ['human','bot'])
+      if(has(legacy?m:key(m,b))){ compMode=m; compBots=b; break outer; }
+  }
+  const d=C[K()]||{comps:[],matches:0};
   h+='<div class="tabs" style="margin-top:2px">';
   for(const m of ['pro','casual'])
-    if(has(m)) h+=`<div class="tab ${compMode===m?'on':''}" onclick="setCompMode('${m}')">${boardLabel(m)}</div>`;
+    if(['human','bot'].some(b=>has(legacy?m:key(m,b))))
+      h+=`<div class="tab ${compMode===m?'on':''}" onclick="setCompMode('${m}')">${boardLabel(m)}</div>`;
   h+='</div>';
-  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:C.min_games||20})}</span></div>`;
+  if(!legacy){
+    h+='<div class="tabs" style="margin-top:6px">';
+    for(const b of ['human','bot'])
+      h+=`<div class="tab ${compBots===b?'on':''}" onclick="setCompBots('${b}')">${t(b==='human'?'comps_human':'comps_bot')}</div>`;
+    h+='</div>';
+  }
+  const note=legacy?'':' · '+t(compBots==='human'?'comps_human_note':'comps_bot_note');
+  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:d.min_games||C.min_games||20})}${note}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
   if(!d.comps.length) h+=`<tr><td colspan="5" class="empty">${t('comps_empty')}</td></tr>`;
   const maxPick=Math.max(...d.comps.map(c=>c[4]),0.01);
