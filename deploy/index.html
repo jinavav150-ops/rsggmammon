@@ -67,10 +67,14 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .opt{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);
   border-radius:10px;padding:7px 9px;min-width:0}
 .opt.best{border-color:var(--win)}
-.opt img{width:22px;height:22px;flex:none}
-.opt .on{flex:1 1 auto;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.opt .ov{flex:none;text-align:right;font-size:11px;color:var(--mut);line-height:1.25}
-.opt .ov b{display:block;font-size:13px}
+.opt img{width:24px;height:24px;flex:none}
+/* 이름을 윗줄, 수치를 아랫줄로. 같은 줄에 두면 긴 번역(프랑스어 등)에서 이름이 40px까지 눌린다 */
+.opt .oc{flex:1 1 auto;min-width:0}
+.opt .on{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 승률·픽률 둘 다 %라서 라벨이 없으면 뭐가 뭔지 구분이 안 된다 */
+.opt .ov{font-size:11px;color:var(--mut);margin-top:2px;display:flex;align-items:baseline;gap:3px;flex-wrap:wrap}
+.opt .ov i{font-style:normal;font-size:10px;font-weight:600;opacity:.85}
+.opt .ov b{font-size:13.5px;margin-right:7px}
 .bld{display:flex;gap:3px;align-items:center}
 .card>.row-filter{padding:12px 12px 0;margin-bottom:12px}   /* 카드 안에 들어간 선택줄 */
 .name{font-weight:700}
@@ -428,8 +432,11 @@ function perksHtml(splitKey,hero){
       const m=PMETA[String(o[0])]||[]; const ty=(m[0]>=0&&m[0]<=8)?m[0]:0;
       h+=`<div class="opt ${o[3]===best&&opts.length>1?'best':''}">
         <img src="img/perk/${ty}.png" alt="">
-        <span class="on" title="${esc(perkName(o[0]))}">${esc(perkName(o[0]))}</span>
-        <span class="ov"><b class="wr ${wrClass(o[3])}">${o[3]}%</b>${o[4]}% · ${o[1].toLocaleString()}</span></div>`;
+        <div class="oc">
+          <div class="on" title="${esc(perkName(o[0]))}">${esc(perkName(o[0]))}</div>
+          <div class="ov"><i>${t('c_wr')}</i><b class="wr ${wrClass(o[3])}">${o[3]}%</b>
+            <i>${t('c_pick')}</i>${o[4]}%<span class="muted"> · ${o[1].toLocaleString()}</span></div>
+        </div></div>`;
     }
     h+='</div></div>';
   });
@@ -506,22 +513,7 @@ function renderTiers(){
 
   // 2-2) 고른 캐릭터의 추천 특성 — 슬롯 4개 × 선택지 2개라 바로 비교가 된다
   h+=perksHtml(key(tierMode,tierBots),tierHero);
-
-  // 3) 2인 듀오
-  if(d.duos&&d.duos.length){
-    h+=`<div class="sect-t">${ICON.trophy} ${t('duos_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('duos_note',{n:d.min_duo})}</span></div>`;
-    h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
-    const mp=Math.max(...d.duos.map(x=>x[4]),0.01);
-    d.duos.forEach((c,i)=>{
-      const hs=c[0].split('+');
-      h+=`<tr><td class="rank ${medalCls(i+1)}">${i+1}</td>
-        <td><span class="comp">${hs.map(x=>heroImg(x)).join('')}<b>${hs.map(x=>hk(x)).join(' · ')}</b></span></td>
-        <td class="num wr ${wrClass(c[3])}">${c[3]}%</td>
-        <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/mp*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
-        <td class="num">${c[1].toLocaleString()}</td></tr>`;
-    });
-    h+='</tbody></table></div>';
-  }
+  // 2인 조합은 조합 탭으로 옮겼다(3인과 나란히 보는 게 맞다) — renderComps 참고
   app.innerHTML=h;
 }
 
@@ -577,7 +569,27 @@ function renderComps(){
       <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/maxPick*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
       <td class="num">${c[1].toLocaleString()}</td></tr>`;
   });
-  app.innerHTML=h+'</tbody></table></div>';
+  h+='</tbody></table></div>';
+  // 2인 조합 — 3인(286가지)은 표본이 얇아지는데 2인(78가지)은 4배 두껍다. 나란히 봐야 판단이 선다.
+  // 데이터는 heroes.json(hstat)에 있고 갈래 키는 조합 탭과 동일하다.
+  h+=duosHtml(key(compMode,compBots));
+  app.innerHTML=h;
+}
+function duosHtml(splitKey){
+  const s=(D.hstat||{})[splitKey];
+  if(!s||!s.duos||!s.duos.length) return '';
+  let h=`<div class="sect-t">${ICON.trophy} ${t('duos_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('duos_note',{n:s.min_duo})}</span></div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+  const mp=Math.max(...s.duos.map(x=>x[4]),0.01);
+  s.duos.forEach((c,i)=>{
+    const hs=c[0].split('+');
+    h+=`<tr><td class="rank ${medalCls(i+1)}">${i+1}</td>
+      <td><span class="comp">${hs.map(x=>heroImg(x)).join('')}<b>${hs.map(x=>hk(x)).join(' · ')}</b></span></td>
+      <td class="num wr ${wrClass(c[3])}">${c[3]}%</td>
+      <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/mp*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
+      <td class="num">${c[1].toLocaleString()}</td></tr>`;
+  });
+  return h+'</tbody></table></div>';
 }
 
 // 필터는 글자를 칠 때마다 목록을 다시 그린다. 이때 화면 전체를 다시 그리면 입력창까지
