@@ -236,7 +236,7 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 </head>
 <body>
 <header><div class="wrap hd">
-  <a class="logo" href="#/board/pro">
+  <a class="logo" href="#/board/pro" onclick="event.preventDefault();goHome()">
     <svg class="emb" viewBox="0 0 32 32" fill="none">
       <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="#4a86ff"/><stop offset="1" stop-color="#8f6bff"/></linearGradient></defs>
@@ -904,6 +904,10 @@ function renderSearch(q){
 //    (재현: 필터 "ki" 입력 → 이미 켜진 탭을 다시 클릭 → 지역 선택 → 입력창엔 ki가 남았는데 목록은 전체)
 //    그래서 해시가 같으면 render()를 직접 부른다.
 function goHash(h){ if(location.hash===h) render(); else location.hash=h; }
+// 로고/첫 진입은 '프로'로 고정돼 있었는데, 시즌 초엔 프로 보드가 없어서
+// 주소는 #/board/pro인데 화면은 캐주얼이 뜨는 불일치가 났다. 있는 보드로 보낸다.
+function firstBoard(){ return (B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]))||'pro'; }
+window.goHome=()=>goBoard(firstBoard());
 function goBoard(b){if(!b)return;curBoard=b;curPage=0;curFilter='';goHash('#/board/'+encodeURIComponent(b));}
 function goPlayer(id){goHash('#/player/'+id);}
 function doSearch(){const q=document.getElementById('q').value.trim();if(q)goHash('#/search/'+encodeURIComponent(q));}
@@ -929,12 +933,26 @@ window.addEventListener('hashchange',render);
 window.LIVE=false;
 async function refreshPlayer(id){
   const btn=document.getElementById('refreshBtn'); if(btn){btn.disabled=true;btn.textContent=t('loading_live');}
+  // ⚠️ 이 조회는 1초 안팎 걸린다. 그동안 사용자가 로고를 누르거나 다른 화면으로 갈 수 있다.
+  //    끝났다고 무조건 다시 그리면 **보고 있던 새 화면을 프로필이 덮어쓴다.**
+  //    (증상: 로고를 눌러 첫 화면이 잠깐 보였다가 다시 프로필로 돌아감)
+  //    그래서 결과를 반영하기 전에 "아직 그 프로필 화면인가"를 확인한다.
+  const still=()=>location.hash==='#/player/'+id;
   try{
     const r=await fetch('/api/player/'+id); const j=await r.json();
-    if(j.ok&&j.player){ P[id]=Object.assign(P[id]||{},j.player); renderPlayer(id);
+    if(j.ok&&j.player){
+      P[id]=Object.assign(P[id]||{},j.player);        // 받아온 데이터는 화면과 무관하게 캐시에 보관
+      if(!still()) return;                            // 이미 다른 화면 → 그리지 않는다
+      renderPlayer(id);
       const fi=document.getElementById('freshInfo'); if(fi) fi.textContent=t('just_refreshed')+' ✓';
-    } else { if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('load_fail')); }
-  }catch(e){ if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('conn_fail')+': '+e); }
+    } else {
+      if(!still()) return;
+      if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('load_fail'));
+    }
+  }catch(e){
+    if(!still()) return;                              // 떠난 뒤에 경고창이 튀어나오지 않게
+    if(btn){btn.disabled=false;btn.innerHTML=ICON.refresh+' '+t('refresh');} alert(t('conn_fail')+': '+e);
+  }
 }
 function timeAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);
   if(s<60)return t('ago_sec',{n:s});
@@ -949,7 +967,7 @@ fetch('/api/status').then(r=>r.json()).then(st=>{
 }).catch(()=>{});
 
 applyStatic();
-if(!location.hash) location.hash='#/board/pro'; else render();
+if(!location.hash) location.hash='#/board/'+firstBoard(); else render();
 </script>
 </body>
 </html>
