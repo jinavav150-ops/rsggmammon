@@ -4,6 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ricochet Squad 전적검색 · RS.GG</title>
+<meta name="description" content="Ricochet Squad 랭킹·전적검색. 캐릭터 티어·상성·특성 빌드·3인/2인 조합 승률까지. 닉네임으로 전적을 찾아보세요.">
+<meta name="theme-color" content="#0e1015">
+<!-- 카톡·디스코드·트위터 공유 시 미리보기 카드. 없으면 링크만 덩그러니 뜬다 -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RS.GG">
+<meta property="og:title" content="Ricochet Squad 전적검색 · RS.GG">
+<meta property="og:description" content="랭킹·티어·상성·특성 빌드·조합 승률을 한 곳에서. 닉네임으로 전적 검색.">
+<meta property="og:url" content="https://ricogg.onrender.com/">
+<meta property="og:image" content="https://ricogg.onrender.com/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/hero/leo.png">
 <style>
 :root{
   --bg:#0e1015; --panel:#171a21; --panel2:#1e2230; --line:#2a2f3d; --tx:#e8eaf0; --mut:#9aa3b2;
@@ -62,6 +76,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mv b{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
 .mv i{font-style:normal;font-weight:800;color:var(--win)}
 .warn{color:var(--lose)}                       /* 표본 얕음 경고 */
+.per{font-size:10.5px;font-weight:700;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;vertical-align:middle}
 /* 특성 슬롯 비교: 슬롯 4개 × 선택지 2개 */
 .slotrow{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .slotrow:last-child{border-bottom:0}
@@ -323,6 +338,7 @@ function applyStatic(){
   document.title=t('site_title');
   const sel=document.getElementById('seasonSel');
   sel.innerHTML=SEASONS.map(c=>`<option value="${c}" ${c===curSeason?'selected':''}>${t('season')} ${seasonLabel(c)}</option>`).join('');
+  syncSeasonSel();
   document.getElementById('q').placeholder=t('search_ph');
   document.getElementById('searchLbl').textContent=t('search');
   document.getElementById('footerTxt').textContent=t('footer',{n:D.generated_count.toLocaleString()});
@@ -407,6 +423,17 @@ window.onRegionChange=el=>{
   if(cnt) cnt.innerHTML=boardCountHtml();
 };
 
+// 티어·조합·특성 통계는 heroes.json / comps.json / perks.json에서 오는데
+// **시즌 구분이 없다**(전체 수집 기간 집계). 그런데 헤더의 시즌 선택기는 계속 보여서
+// "시즌을 바꿨는데 숫자가 그대로"라는 오해를 산다. 그 탭에선 선택기를 잠근다.
+const SEASONLESS=['tiers','comps'];
+function syncSeasonSel(){
+  const sel=document.getElementById('seasonSel'); if(!sel) return;
+  const off=SEASONLESS.includes(curBoard);
+  sel.disabled=off; sel.style.opacity=off?.45:''; sel.style.cursor=off?'not-allowed':'';
+  sel.title=off?t('season_na'):'';
+}
+
 // ── 티어: 캐릭터 승률 · 상성 · 2인 듀오 ───────────────────────────
 // heroes.json(build_heroes.py가 미리 집계)을 그대로 그린다. 갈래는 조합 탭과 동일하게
 // 프로/캐주얼 × 사람만/봇포함 4가지. 봇전과 대인전은 순위가 아예 뒤집히므로 꼭 나눠 본다.
@@ -487,7 +514,7 @@ function renderTiers(){
   const thin=d.matches<1000?` · <span class="warn">${t('tier_thin')}</span>`:'';
 
   // 1) 캐릭터 승률·픽률
-  h+=`<div class="sect-t">${ICON.trophy} ${t('tier_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('tier_note',{m:d.matches.toLocaleString(),f:S.from||'',t:S.to||''})}${thin}</span></div>`;
+  h+=`<div class="sect-t">${ICON.trophy} ${t('tier_title')} <span class="per">${t('all_period')}</span> <span class="muted" style="font-size:12px;font-weight:400">${t('tier_note',{m:d.matches.toLocaleString(),f:S.from||'',t:S.to||''})}${thin}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_hero')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
   const maxPick=Math.max(...d.heroes.map(x=>x[4]),0.01);
   d.heroes.forEach((c,i)=>{
@@ -563,7 +590,7 @@ function renderComps(){
     h+='</div>';
   }
   const note=legacy?'':' · '+t(compBots==='human'?'comps_human_note':'comps_bot_note');
-  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:d.min_games||C.min_games||20})}${note}</span></div>`;
+  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="per">${t('all_period')}</span> <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:d.min_games||C.min_games||20})}${note}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
   if(!d.comps.length) h+=`<tr><td colspan="5" class="empty">${t('comps_empty')}</td></tr>`;
   const maxPick=Math.max(...d.comps.map(c=>c[4]),0.01);
@@ -872,9 +899,14 @@ function renderSearch(q){
 }
 
 // 라우팅
-function goBoard(b){if(!b)return;curBoard=b;curPage=0;curFilter='';location.hash='#/board/'+encodeURIComponent(b);}
-function goPlayer(id){location.hash='#/player/'+id;}
-function doSearch(){const q=document.getElementById('q').value.trim();if(q)location.hash='#/search/'+encodeURIComponent(q);}
+// ⚠️ 해시가 이미 같으면 브라우저는 hashchange를 안 쏜다. 그런데 전역 변수(curFilter 등)는
+//    이미 바뀐 뒤라, 화면만 옛 상태로 남아 어긋난다.
+//    (재현: 필터 "ki" 입력 → 이미 켜진 탭을 다시 클릭 → 지역 선택 → 입력창엔 ki가 남았는데 목록은 전체)
+//    그래서 해시가 같으면 render()를 직접 부른다.
+function goHash(h){ if(location.hash===h) render(); else location.hash=h; }
+function goBoard(b){if(!b)return;curBoard=b;curPage=0;curFilter='';goHash('#/board/'+encodeURIComponent(b));}
+function goPlayer(id){goHash('#/player/'+id);}
+function doSearch(){const q=document.getElementById('q').value.trim();if(q)goHash('#/search/'+encodeURIComponent(q));}
 document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 
 function render(){
@@ -885,6 +917,7 @@ function render(){
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
+  syncSeasonSel();
   if(curBoard==='tiers') return renderTiers();
   if(curBoard==='comps') return renderComps();
   if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
