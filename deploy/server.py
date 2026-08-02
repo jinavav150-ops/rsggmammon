@@ -6,7 +6,7 @@
 - /api/player/<id> : 그 유저를 게임서버에서 실시간 조회
 실행:  python3 server.py   →  브라우저에서 http://localhost:8000
 """
-import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request
+import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
@@ -179,6 +179,155 @@ def hist_observe(pid,name):
         rec["cur"]=name; return rec["prev"], True
     return rec.get("prev",[]), False
 
+# ── 랭킹 변동 추적 (일별 스냅샷) ──────────────────────────────────
+# 매일 KST 0시 이후 첫 갱신 때 그날의 랭킹 전체를 "기준선"으로 저장한다.
+# 화면의 ▲▼는 [지금 순위 vs 오늘 기준선]이라 뜻이 '오늘 들어 오른/내린 폭'으로 딱 떨어진다.
+#
+# ⚠️ 저장은 반드시 Upstash. Render 무료는 재배포마다 디스크가 날아가서 파일에만 두면
+#    아무리 오래 돌려도 이력이 안 쌓인다(닉네임 이력과 같은 이유). 파일은 로컬 개발용 폴백.
+# ⚠️ 하루치를 한 키에 넣는데, player_id(36자)를 그대로 쓰면 압축해도 1.4MB라
+#    Upstash 요청 크기 한도(1MB)를 넘긴다. 그래서 id는 별도 사전(rsgg:rank:ids)에 두고
+#    스냅샷에는 번호만 넣는다 → 하루 200KB. 60일 보관해도 12MB.
+RANK_KEEP_DAYS=int(os.environ.get("RANK_KEEP_DAYS","60"))
+RANK_IDS_KEY="rsgg:rank:ids"     # player_id 사전 (번호 = 배열 위치, 추가만 함)
+RANK_DAYS_KEY="rsgg:rank:days"   # 보유한 날짜 목록
+RANK_DAY_KEY="rsgg:rank:d:"      # + YYYY-MM-DD → 그날의 기준선
+RANK_FILE=os.path.join(DATA,"rank_hist.json")   # Upstash 없을 때만 쓰는 폴백
+RANK={"ids":[],"idx":{},"days":[],"base":None,"base_day":None,"dirty":False}
+
+def kst_day(ts=None):
+    """한국시간 기준 날짜. 하루의 경계를 어디로 잡든 일관되기만 하면 되고,
+    사이트 주 사용자가 한국이라 KST로 고정한다."""
+    return time.strftime("%Y-%m-%d", time.gmtime((ts or time.time())+9*3600))
+
+def _rk_pack(o):
+    return base64.b64encode(zlib.compress(json.dumps(o,ensure_ascii=False,separators=(",",":")).encode(),6)).decode()
+def _rk_unpack(s):
+    try: return json.loads(zlib.decompress(base64.b64decode(s)).decode())
+    except Exception: return None
+def _rk_redis(): return bool(UPSTASH_URL and UPSTASH_TOKEN)
+def _rk_file():
+    try: return json.load(open(RANK_FILE,encoding="utf-8"))
+    except Exception: return {}
+def _rk_file_save(d):
+    try: json.dump(d,open(RANK_FILE,"w",encoding="utf-8"),ensure_ascii=False)
+    except Exception as e: print("[랭킹이력] 파일 저장 실패:",e)
+
+def rank_store_load():
+    """ids 사전과 날짜 목록을 읽어온다."""
+    if _rk_redis():
+        ids=_rk_unpack(redis_cmd("GET",RANK_IDS_KEY) or "") or []
+        try: days=json.loads(redis_cmd("GET",RANK_DAYS_KEY) or "[]")
+        except Exception: days=[]
+        return ids,days
+    f=_rk_file(); return f.get("ids") or [], f.get("days") or []
+def rank_store_day(day):
+    if _rk_redis():
+        raw=redis_cmd("GET",RANK_DAY_KEY+day)
+        return _rk_unpack(raw) if raw else None
+    return (_rk_file().get("snaps") or {}).get(day)
+def rank_store_save(day,snap,days,save_ids):
+    if _rk_redis():
+        if save_ids: redis_cmd("SET",RANK_IDS_KEY,_rk_pack(RANK["ids"]))
+        redis_cmd("SET",RANK_DAY_KEY+day,_rk_pack(snap))
+        redis_cmd("SET",RANK_DAYS_KEY,json.dumps(days))
+    else:
+        f=_rk_file(); f["ids"]=RANK["ids"]; f["days"]=days
+        snaps=f.setdefault("snaps",{}); snaps[day]=snap
+        for k in list(snaps):
+            if k not in days: snaps.pop(k,None)
+        _rk_file_save(f)
+def rank_store_drop(day):
+    if _rk_redis(): redis_cmd("DEL",RANK_DAY_KEY+day)
+
+def _rk_id(pid):
+    i=RANK["idx"].get(pid)
+    if i is None:
+        i=len(RANK["ids"]); RANK["ids"].append(pid); RANK["idx"][pid]=i; RANK["dirty"]=True
+    return i
+
+def build_snapshot():
+    """지금 캐시의 랭킹 → {시즌:{보드:{"i":[번호…순위순],"s":[점수…]}}}"""
+    out={}
+    with LOCK:
+        sdata=CACHE["sdata"]; ranks=CACHE["player_ranks"]
+        for season,sd in sdata.items():
+            b={}
+            for label,pids in (sd.get("boards") or {}).items():
+                sc=[]
+                for pid in pids:
+                    e=((ranks.get(pid) or {}).get(season) or {}).get(label)
+                    sc.append(e[1] if e else None)
+                b[label]={"i":[_rk_id(p) for p in pids],"s":sc}
+            out[season]=b
+    return out
+
+def snap_lookup(snap):
+    """스냅샷 → {시즌:{보드:{player_id: 순위}}} (변동 계산용)"""
+    ids=RANK["ids"]; out={}
+    for season,bs in (snap or {}).items():
+        o={}
+        for label,d in (bs or {}).items():
+            m={}
+            for r,i in enumerate(d.get("i") or []):
+                if 0<=i<len(ids): m[ids[i]]=r+1
+            o[label]=m
+        out[season]=o
+    return out
+
+def rank_load():
+    ids,days=rank_store_load()
+    RANK["ids"]=ids; RANK["idx"]={p:i for i,p in enumerate(ids)}; RANK["days"]=days
+    day=kst_day()
+    pick=day if day in days else (days[-1] if days else None)
+    if pick:
+        snap=rank_store_day(pick)
+        if snap: RANK["base"]=snap_lookup(snap); RANK["base_day"]=pick
+    where="Upstash" if _rk_redis() else "파일(로컬)"
+    print(f"랭킹이력 {len(days)}일치 [{where}] · 기준 {RANK['base_day'] or '없음(첫 저장 대기)'}")
+
+def rank_tick():
+    """리더보드 갱신 뒤 호출. 날짜가 바뀌었으면 그 시점 랭킹을 그날 기준선으로 저장."""
+    try:
+        day=kst_day()
+        if RANK["base_day"]==day: return          # 오늘 기준선 이미 있음
+        if day in RANK["days"]:                   # 재시작 — 저장돼 있던 오늘 기준선을 다시 읽는다
+            snap=rank_store_day(day)
+            if snap:
+                RANK["base"]=snap_lookup(snap); RANK["base_day"]=day; return
+        with LOCK: has=bool(CACHE["sdata"])
+        if not has: return                        # 랭킹이 아직 안 올라왔으면 저장하지 않는다
+        snap=build_snapshot()
+        days=sorted(set(RANK["days"])|{day})
+        old=days[:-RANK_KEEP_DAYS]; days=days[-RANK_KEEP_DAYS:]
+        rank_store_save(day,snap,days,RANK["dirty"])
+        RANK["dirty"]=False
+        for d in old: rank_store_drop(d)
+        RANK["days"]=days; RANK["base"]=snap_lookup(snap); RANK["base_day"]=day
+        print(f"[랭킹이력] {day} 기준선 저장 · 보유 {len(days)}일" + (f" · 만료 {len(old)}일 삭제" if old else ""))
+    except Exception as e:
+        print("[랭킹이력] 오류:",e)
+
+def rank_delta():
+    """지금 순위 vs 오늘 기준선. {시즌:{보드:{player_id: 변동}}}.
+    양수=상승, 음수=하락, "N"=기준선에 없던 신규 진입. 변동 없는 사람은 아예 안 넣는다."""
+    base=RANK.get("base")
+    if not base: return {}
+    out={}
+    with LOCK: sdata=CACHE["sdata"]
+    for season,sd in sdata.items():
+        bb=base.get(season) or {}
+        for label,pids in (sd.get("boards") or {}).items():
+            prev=bb.get(label)
+            if not prev: continue
+            d={}
+            for i,pid in enumerate(pids):
+                p=prev.get(pid)
+                if p is None: d[pid]="N"
+                elif p!=i+1: d[pid]=p-(i+1)
+            if d: out.setdefault(season,{})[label]=d
+    return out
+
 def load_disk():
     try:
         lb=json.load(open(os.path.join(DATA,"leaderboards.json"),encoding="utf-8"))
@@ -198,6 +347,7 @@ def load_disk():
     else:
         print("Upstash 미설정 — 닉네임 이력은 재배포시 초기화됩니다")
     hist_load()
+    rank_load()
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
@@ -287,6 +437,9 @@ def build_site_data():
         out={"perk_meta":pmeta,"comps":COMPS,
             "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
+    # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)
+    out["rdelta"]=rank_delta()
+    out["rbase"]={"day":RANK["base_day"],"days":len(RANK["days"])}
     with open(os.path.join(HERE,"site_data.js"),"w",encoding="utf-8") as f:
         f.write("window.DATA="); json.dump(out,f,ensure_ascii=False,separators=(",",":")); f.write(";")
 
@@ -313,7 +466,7 @@ def refresh_leaderboards():
     s.close()
     result["unique_player_ids"]=sorted(allids)
     json.dump(result,open(os.path.join(DATA,"leaderboards.json"),"w",encoding="utf-8"),ensure_ascii=False)
-    apply_leaderboards(result); build_site_data()
+    apply_leaderboards(result); rank_tick(); build_site_data()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
 
 def scheduler():
@@ -444,7 +597,8 @@ class H(http.server.BaseHTTPRequestHandler):
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
                 "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
                 "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
-                "names":len(NAME_HIST)}
+                "names":len(NAME_HIST),
+                "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
         if path=="/api/search":
             qs=urllib.parse.parse_qs(u.query); q=(qs.get("q",[""])[0] or "").strip().lower()
@@ -486,7 +640,9 @@ def main():
     if not PID or not SEC:
         print("!! 환경변수 RS_PID / RS_SEC 가 설정되지 않았습니다. (클라우드 대시보드에서 설정)")
     print("데이터 로드 중...")
-    load_disk(); build_site_data()
+    load_disk()
+    rank_tick()          # 첫 갱신(30분 뒤)까지 기다리지 않고 오늘 기준선부터 잡는다
+    build_site_data()
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=sweep_scheduler,daemon=True).start()
     srv=http.server.ThreadingHTTPServer(("0.0.0.0",WEB_PORT),H)

@@ -49,6 +49,15 @@ tbody tr:hover{background:var(--panel2)}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .rank{font-weight:800;width:52px;text-align:center}
 .r1{color:var(--gold)}.r2{color:var(--silver)}.r3{color:var(--bronze)}
+/* 순위 변동(오늘 0시 기준 대비). 열을 늘리면 모바일에서 표가 터져서 순위 칸 아래에 붙인다 */
+.dlt{display:block;font-size:10.5px;font-weight:700;line-height:1.1;margin-top:2px}
+.dlt.up{color:var(--win)}.dlt.dn{color:var(--lose)}.dlt.new{color:var(--acc)}
+.movers{display:flex;gap:8px;flex-wrap:wrap;padding:12px}
+.mv{display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:999px;padding:5px 11px;cursor:pointer;font-size:12.5px;max-width:100%}
+.mv:hover{border-color:var(--acc)}
+.mv b{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
+.mv i{font-style:normal;font-weight:800;color:var(--win)}
 .name{font-weight:700}
 .reg{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:2px}
 .wr{font-weight:700}.wrh{color:var(--win)}.wrl{color:var(--lose)}
@@ -438,6 +447,36 @@ window.onFilterInput=el=>{
   const cnt=document.getElementById('boardCount');
   if(cnt) cnt.innerHTML=boardCountHtml();
 };
+// ── 순위 변동 ────────────────────────────────────────────────
+// 서버가 매일 0시(KST) 랭킹을 기준선으로 저장하고, rdelta에 [지금 - 기준선] 차이만 실어준다.
+// 즉 여기 숫자는 "오늘 들어 몇 계단 올랐나". 기준선이 없는 첫날엔 rdelta가 비어 온다.
+const RDELTA=()=>((D.rdelta||{})[curSeason]||{});
+function deltaHtml(board,pid){
+  const v=(RDELTA()[board]||{})[pid];
+  if(v==null||v===0) return '';
+  if(v==='N') return `<span class="dlt new">${t('rank_new')}</span>`;
+  return v>0?`<span class="dlt up">▲${v}</span>`:`<span class="dlt dn">▼${-v}</span>`;
+}
+function moversHtml(){
+  const rb=D.rbase||{};
+  if(!rb.days) return '';                       // 이력 기능이 없는(옛) 데이터
+  const d=RDELTA()[curBoard]||{};
+  const ups=Object.entries(d).filter(([,v])=>typeof v==='number'&&v>0)
+    .sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);   // 서버 기준일이 KST라 맞춰서 비교
+  const note=rb.day===today?t('movers_note'):t('movers_since',{d:rb.day||'-'});
+  if(!ups.length){
+    // 기준선만 잡힌 첫날. 기능이 죽은 게 아니라 쌓는 중이라는 걸 알려준다.
+    return rb.days<=1?`<div class="card"><div class="movers"><span class="muted" style="font-size:12.5px">${t('movers_wait')}</span></div></div>`:'';
+  }
+  let h=`<div class="sect-t">${ICON.trophy} ${t('movers_up')} <span class="muted" style="font-size:12px;font-weight:400">${note}</span></div>`;
+  h+='<div class="card"><div class="movers">';
+  for(const [pid,v] of ups){
+    const p=P[pid]; if(!p) continue;
+    h+=`<span class="mv" onclick="goPlayer('${pid}')"><b>${esc(p.n)}</b><i>▲${v}</i></span>`;
+  }
+  return h+'</div></div>';
+}
 function boardRows(){
   const ids=B[curBoard]||[];
   let rows=ids.map((id,i)=>({id,rank:i+1}));
@@ -457,7 +496,7 @@ function boardBodyHtml(){
   let h=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
   for(const r of slice){const p=P[r.id];const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
-    h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}</td>
+    h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}${deltaHtml(curBoard,r.id)}</td>
       <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(regionName(p.r))}</span></td>
       <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td>
@@ -482,6 +521,7 @@ function renderBoard(){
   h+=`<div class="row-filter">${regionOptions()}
     <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
     <span class="muted" id="boardCount">${boardCountHtml()}</span></div>`;
+  h+=moversHtml();              // 오늘 많이 오른 유저 (지역·페이지와 무관하게 보드 전체 기준)
   h+=`<div id="boardBody">${boardBodyHtml()}</div>`;
   app.innerHTML=h;
 }
@@ -528,7 +568,7 @@ function renderPlayer(id){
   h+=`<div class="sect-t">${ICON.trophy} ${t('rank_section')} (${t('season')} ${seasonLabel(curSeason)})</div><div class="card" style="overflow-x:auto"><table>
     <thead><tr><th>${t('c_type')}</th><th class="num">${t('c_rank')}</th><th class="num">${t('c_score')}</th><th class="hcol">${t('c_top_pct')}</th></tr></thead><tbody>`;
   const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
-    h+=`<tr><td>${isHero?ICON.target+' ':''}${boardLabel(lab)}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
+    h+=`<tr><td>${isHero?ICON.target+' ':''}${boardLabel(lab)}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}${deltaHtml(lab,id)}</td>
       <td class="num">${score.toLocaleString()}</td>
       <td class="hcol"><span class="pct"><i style="width:${Math.min(100,pct)}%"></i></span> <span class="muted">${pct.toFixed(1)}%</span></td></tr>`;};
   if(!modeRows.length&&!heroRows.length) h+=`<tr><td colspan="4" class="empty">${t('no_rank')}</td></tr>`;
