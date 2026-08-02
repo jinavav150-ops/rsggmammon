@@ -6,7 +6,7 @@
 - /api/player/<id> : 그 유저를 게임서버에서 실시간 조회
 실행:  python3 server.py   →  브라우저에서 http://localhost:8000
 """
-import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64
+import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64, gzip, re
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
@@ -19,6 +19,7 @@ LB_REFRESH_SEC=1800   # 30분
 WEB_PORT=int(os.environ.get("PORT","8000"))
 HERE=os.path.dirname(os.path.abspath(__file__))
 DATA=os.path.join(HERE,"data")
+VALID_PID=re.compile(r"^[0-9a-fA-F-]{8,40}$")   # 게임 player_id(UUID) 형식만 통과
 HEROES={"108140568":"Dread","80931949":"Khan","61223451":"Vector","631049":"Oni","631047":"Remedy",
 "97251807":"Sejin","631045":"Twinkle","631042":"Jagger","631040":"Calibri","631036":"Leo",
 "45850136":"Magnus","65893852":"Nova","91887043":"Fury"}
@@ -58,9 +59,16 @@ def rd(s):
 def connect():
     try: s=socket.create_connection((HOST,PORT),timeout=10)
     except Exception: s=socket.create_connection((IP,PORT),timeout=10)
-    s.settimeout(20)
-    s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC})); rd(s)
-    return s
+    # ⚠️ 인증 도중 터지면 소켓을 반드시 닫는다. 예전엔 여기서 예외가 나면 소켓이
+    #    영영 안 닫혀서, 게임서버가 느릴 때마다 fd가 1개씩 새어 결국 서버가 접속을 못 받았다.
+    try:
+        s.settimeout(20)
+        s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC})); rd(s)
+        return s
+    except Exception:
+        try: s.close()
+        except Exception: pass
+        raise
 def skin_name(v):
     if v is None: return None
     nm=TN.get(str(v))
@@ -169,19 +177,26 @@ def hist_load():
     NAME_HIST.clear(); NAME_HIST.update(base)
     print(f"이름이력 {len(NAME_HIST)}명 (파일 {n_file} + Redis {n_redis} 병합)")
 def hist_save():
-    if UPSTASH_URL and UPSTASH_TOKEN:
-        redis_cmd("SET",HIST_KEY,json.dumps(NAME_HIST,ensure_ascii=False))
+    if not (UPSTASH_URL and UPSTASH_TOKEN): return
+    # ⚠️ 직렬화는 LOCK 안에서(그 사이 다른 스레드가 키를 넣으면 순회 중 예외),
+    #    네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
+    with LOCK: blob=json.dumps(NAME_HIST,ensure_ascii=False)
+    if redis_cmd("SET",HIST_KEY,blob) is None:
+        print("[이름이력] Upstash 저장 실패 — 이번 변경분이 저장되지 않았습니다")
 def hist_observe(pid,name):
-    # 이름 관측 → 개명 감지시 기록. 반환 (prev리스트, 변경여부)
-    if not name: return NAME_HIST.get(pid,{}).get("prev",[]), False
-    rec=NAME_HIST.get(pid)
-    if rec is None:
-        NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
-    if rec.get("cur")!=name:
-        old=rec.get("cur")
-        if old and old not in rec["prev"]: rec["prev"].insert(0,old)
-        rec["cur"]=name; return rec["prev"], True
-    return rec.get("prev",[]), False
+    """이름 관측 → 개명 감지시 기록. 반환 (prev리스트, 변경여부)
+    ⚠️ NAME_HIST는 /api/search가 순회하는 dict다. 여기서 락 없이 키를 추가하면
+       검색 중이던 요청이 'dictionary changed size during iteration'으로 끊긴다."""
+    with LOCK:
+        if not name: return NAME_HIST.get(pid,{}).get("prev",[]), False
+        rec=NAME_HIST.get(pid)
+        if rec is None:
+            NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
+        if rec.get("cur")!=name:
+            old=rec.get("cur")
+            if old and old not in rec["prev"]: rec["prev"].insert(0,old)
+            rec["cur"]=name; return list(rec["prev"]), True
+        return list(rec.get("prev",[])), False
 
 # ── 랭킹 변동 추적 (일별 스냅샷) ──────────────────────────────────
 # 매일 KST 0시 이후 첫 갱신 때 그날의 랭킹 전체를 "기준선"으로 저장한다.
@@ -438,7 +453,17 @@ def slim_player(p):
     q={k:p[k] for k in SLIM_KEYS if k in p and p[k] not in (None,[],"")}
     return q
 
+# site_data.js는 만들자마자 **메모리에 들고** 그걸 서빙한다.
+# ⚠️ 예전엔 요청마다 파일을 통째로 read()했다. 3.9MB를 동시에 여러 명이 받으면
+#    무료 512MB 인스턴스가 OOM으로 죽는다. 게다가 "파일을 자르고 이어 쓰는" 방식이라
+#    쓰는 도중 방문한 사람은 **잘린 파일**을 받아 화면이 백지가 됐다.
+# ⚠️ build_site_data는 갱신 스레드와 이름검사 스레드 양쪽에서 부른다.
+#    주기가 1800초 · 21600초로 정확히 12배라 6시간마다 동시에 실행된다 → 전용 락으로 직렬화.
+BUILD_LOCK=threading.Lock()
+SITE_JS={"bytes":b"", "gz":b"", "ts":0}
+
 def build_site_data():
+  with BUILD_LOCK:
     with LOCK:
         players={}
         for pid,p in CACHE["players"].items():
@@ -453,32 +478,48 @@ def build_site_data():
     # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)
     out["rdelta"]=rank_delta()
     out["rbase"]={"day":RANK["base_day"],"days":len(RANK["days"])}
-    with open(os.path.join(HERE,"site_data.js"),"w",encoding="utf-8") as f:
-        f.write("window.DATA="); json.dump(out,f,ensure_ascii=False,separators=(",",":")); f.write(";")
+    body=("window.DATA="+json.dumps(out,ensure_ascii=False,separators=(",",":"))+";").encode("utf-8")
+    # 먼저 메모리에 올린다 — 서빙은 여기서만 하므로 파일이 잘려도 화면이 깨지지 않는다
+    SITE_JS.update(bytes=body, gz=gzip.compress(body,6), ts=int(time.time()))
+    # 파일은 임시파일에 쓰고 통째로 바꿔치기(원자적). 쓰다 죽어도 이전 파일이 온전히 남는다
+    p=os.path.join(HERE,"site_data.js"); tmp=p+".tmp"
+    try:
+        with open(tmp,"wb") as f: f.write(body)
+        os.replace(tmp,p)
+    except Exception as e:
+        print("[site_data] 파일 저장 실패(서빙은 메모리로 계속):",e)
+        try: os.remove(tmp)
+        except Exception: pass
 
 def refresh_leaderboards():
     print("[갱신] 리더보드 수집...")
     s=connect(); rid=1000; allids=set()
-    seasons=find_seasons(s)          # 달이 바뀌면 여기서 자동으로 새 시즌을 잡는다
-    result={"seasons":seasons,"boards":{}}
-    for season in seasons:
-        sb={}
-        boards=[("pro","pro",f"rating_pro_0_{season}"),("casual","casual",f"rating_casual_0_{season}")]
-        boards+=[("hero",HEROES[h],f"rating_heroes_{h}_{season}") for h in HEROES]
-        for kind,label,name in boards:
-            rid+=1
-            try: body=lb_get(s,name,rid)
-            except Exception: body=None
-            if not body: continue
-            ids=body.get("top_player_ids",[]); sc=body.get("top_player_scores",[])
-            if not ids: continue      # 아직 안 열린 보드(예: 시즌 초 프로)
-            sb[name]={"kind":kind,"label":label,"size":body.get("leaderboard_size"),
-                "entries":[{"rank":i+1,"player_id":pid,"score":s2} for i,(pid,s2) in enumerate(zip(ids,sc))]}
-            allids.update(ids)
-        result["boards"][season]=sb
-    s.close()
+    try:                              # ⚠️ 중간에 예외가 나도 소켓은 반드시 닫는다(fd 누수 방지)
+        seasons=find_seasons(s)      # 달이 바뀌면 여기서 자동으로 새 시즌을 잡는다
+        result={"seasons":seasons,"boards":{}}
+        for season in seasons:
+            sb={}
+            boards=[("pro","pro",f"rating_pro_0_{season}"),("casual","casual",f"rating_casual_0_{season}")]
+            boards+=[("hero",HEROES[h],f"rating_heroes_{h}_{season}") for h in HEROES]
+            for kind,label,name in boards:
+                rid+=1
+                try: body=lb_get(s,name,rid)
+                except Exception: body=None
+                if not isinstance(body,dict): continue
+                ids=body.get("top_player_ids",[]); sc=body.get("top_player_scores",[])
+                if not ids: continue      # 아직 안 열린 보드(예: 시즌 초 프로)
+                sb[name]={"kind":kind,"label":label,"size":body.get("leaderboard_size"),
+                    "entries":[{"rank":i+1,"player_id":pid,"score":s2} for i,(pid,s2) in enumerate(zip(ids,sc))]}
+                allids.update(ids)
+            result["boards"][season]=sb
+    finally:
+        try: s.close()
+        except Exception: pass
     result["unique_player_ids"]=sorted(allids)
-    json.dump(result,open(os.path.join(DATA,"leaderboards.json"),"w",encoding="utf-8"),ensure_ascii=False)
+    # 원자적 저장 — 쓰다 죽어도 이전 파일이 온전히 남는다(잘린 JSON이면 다음 부팅 때 랭킹이 비어버림)
+    lbp=os.path.join(DATA,"leaderboards.json")
+    with open(lbp+".tmp","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False)
+    os.replace(lbp+".tmp",lbp)
     apply_leaderboards(result); rank_tick(); build_site_data()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
 
@@ -634,6 +675,8 @@ class H(http.server.BaseHTTPRequestHandler):
             # 프로필 상세를 서버 메모리 캐시에서 즉시 준다(게임서버 접속 없음, 1KB대).
             # site_data.js에서 뺀 부분을 여기로 돌린 것. 실시간 최신값이 필요하면 /api/player/.
             pid=urllib.parse.unquote(path[len("/api/detail/"):])
+            if not VALID_PID.match(pid):
+                return self._send(404,json.dumps({"ok":False,"player":None}))
             with LOCK:
                 p=CACHE["players"].get(pid)
                 q=(dict(p) if p else None)
@@ -641,22 +684,39 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200 if q else 404,json.dumps({"ok":bool(q),"player":q}))
         if path.startswith("/api/player/"):
             pid=urllib.parse.unquote(path[len("/api/player/"):])
+            # ⚠️ 형식부터 본다. 예전엔 아무 문자열이나 그대로 게임서버에 물어봐서,
+            #    잘못된 주소로 들어온 사람이 최대 20초를 기다렸다(그동안 연결도 하나 점유).
+            if not VALID_PID.match(pid):
+                return self._send(404,json.dumps({"ok":False,"player":None}))
             try:
                 p=live_player(pid)
                 return self._send(200 if p else 404,json.dumps({"ok":bool(p),"player":p,"ts":int(time.time())}))
             except Exception as e:
                 return self._send(500,json.dumps({"ok":False,"error":str(e)}))
-        # 정적 파일
+        # ── 정적 파일 ────────────────────────────────────────────
+        # ⚠️ 예전엔 폴더 아래 **모든 파일**을 내줬다. 그래서 /data/players.json(15.7MB),
+        #    /data/name_history.json, /server.py 소스까지 전부 다운로드가 됐다.
+        #    이제 화면에 실제로 필요한 것만 허용한다(화이트리스트).
         fn="index.html" if path in ("/","") else path.lstrip("/")
-        fp=os.path.join(HERE,fn)
-        if os.path.isfile(fp) and os.path.abspath(fp).startswith(HERE):
-            ct=("text/html" if fn.endswith(".html") else "application/javascript" if fn.endswith(".js")
-                else "image/png" if fn.endswith(".png") else "image/webp" if fn.endswith(".webp")
-                else "image/svg+xml" if fn.endswith(".svg") else "text/plain")
-            # html/js는 항상 새로 받게(수정 후 옛 화면 방지), 이미지는 오래 캐시
-            cache="public, max-age=604800" if fn.startswith("img/") else "no-cache"
-            return self._send(200,open(fp,"rb").read(),ct,cache)
-        self._send(404,"not found","text/plain")
+        if fn=="site_data.js":
+            # 파일이 아니라 메모리에서 준다 (요청마다 3.9MB를 읽지 않는다)
+            if not SITE_JS["bytes"]: return self._send(503,"data not ready","text/plain")
+            return self._send(200,SITE_JS["bytes"],"application/javascript","no-cache")
+        ALLOWED={"index.html":"text/html","i18n.js":"application/javascript",
+                 "favicon.ico":"image/x-icon","robots.txt":"text/plain"}
+        ct=ALLOWED.get(fn)
+        if ct is None and fn.startswith("img/") and not fn.startswith("img/../"):
+            ct=("image/png" if fn.endswith(".png") else "image/webp" if fn.endswith(".webp")
+                else "image/svg+xml" if fn.endswith(".svg") else None)
+        if ct is None:
+            return self._send(404,"not found","text/plain")
+        fp=os.path.realpath(os.path.join(HERE,fn))
+        if not (os.path.isfile(fp) and fp.startswith(os.path.realpath(HERE)+os.sep)):
+            return self._send(404,"not found","text/plain")
+        # html/js는 항상 새로 받게(수정 후 옛 화면 방지), 이미지는 오래 캐시
+        cache="public, max-age=604800" if fn.startswith("img/") else "no-cache"
+        with open(fp,"rb") as f: data=f.read()
+        return self._send(200,data,ct,cache)
 
 def main():
     if not PID or not SEC:

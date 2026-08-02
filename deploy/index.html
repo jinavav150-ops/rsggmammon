@@ -32,7 +32,7 @@ footer .crown{width:15px;height:15px;fill:none;stroke:#e8b923;stroke-width:1.8;s
 select.badge{cursor:pointer;font-family:inherit}
 select.badge:hover{border-color:var(--acc);color:var(--tx)}
 .search{flex:1;min-width:200px;display:flex;gap:8px}
-.search input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:9px 12px;font-size:14px;outline:none}
+.search input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:9px 12px;font-size:16px;outline:none}
 .search input:focus{border-color:var(--acc)}
 .btn{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;padding:12px 0}
@@ -40,7 +40,10 @@ select.badge:hover{border-color:var(--acc);color:var(--tx)}
 .tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .tab.hero.on{background:#6b4bd6;border-color:#6b4bd6}
 .row-filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-select,.mini{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:13px}
+/* ⚠️ 입력요소 폰트는 16px 미만이면 iOS Safari가 포커스 시 화면을 확대하고 안 돌아온다.
+   데스크톱에선 13px이 보기 좋아서 601px 이상에서만 줄인다. */
+select,.mini{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:16px}
+@media(min-width:601px){select,.mini{font-size:13px} .search input{font-size:14px}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 table{width:100%;border-collapse:collapse}
 th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -167,6 +170,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mmode{font-size:12px}
 .mdmg{display:none}
 @media(max-width:600px){.mtab{min-width:0} .hcol{display:none}
+  /* 좁은 화면에선 셀 여백을 줄여야 마지막 열(승률)이 안 잘린다 */
+  th,td{padding:9px 7px}
+  .reg{font-size:10px;padding:1px 4px;margin-left:1px}
   .mmode{display:block;font-size:10.5px;margin-top:2px} .mtab th,.mtab td{padding:7px 6px;font-size:12px}
   .mdmg{display:block;font-size:10px;color:var(--mut);font-weight:400;margin-top:2px}
   .sect-t{font-size:14px} #matchInfo{flex:1 0 100%;margin-left:0}
@@ -649,14 +655,14 @@ function boardBodyHtml(){
   const total=rows.length, pages=Math.max(1,Math.ceil(total/PAGE));
   if(curPage>=pages)curPage=0;
   const slice=rows.slice(curPage*PAGE,curPage*PAGE+PAGE);
-  let h=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
+  let h=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_level')}</th><th class="num hcol">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
   for(const r of slice){const p=P[r.id];const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
     h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}${deltaHtml(curBoard,r.id)}</td>
       <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(regionName(p.r))}</span></td>
       <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td>
-      <td class="num">${p.lv??'-'}</td><td class="num">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;
+      <td class="num hcol">${p.lv??'-'}</td><td class="num hcol">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;
   }
   h+='</tbody></table>';
   // 페이지 이동은 목록만 다시 그린다(입력창 유지)
@@ -694,7 +700,9 @@ function fetchDetail(id,p){
     .catch(again);
 }
 function renderPlayer(id){
-  const p=P[id];
+  // ⚠️ P['__proto__']는 Object.prototype이라 truthy다. 그대로 두면 프로필 객체로 오인해
+  //    프로토타입에 값을 심고 화면이 멈춘다. 실제로 가진 키인지 확인한다.
+  const p=Object.prototype.hasOwnProperty.call(P,id)?P[id]:undefined;
   if(p && D.slim && !p.h && !p._d){
     fetchDetail(id,p);
     app.innerHTML=`<div class="card"><div class="empty">${t('loading')}</div></div>`;
@@ -836,13 +844,13 @@ function searchRow(it){
   for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=boardLabel(lab)+' '+t('rank_suffix',{r:rk[lab][0]});}}
   const prevTag=it.prevMatch?`<div class="muted" style="font-size:11px">↳ ${t('old_nick')} <b>${esc(it.prevMatch)}</b> → ${t('now_nick')} <b>${esc(it.n)}</b></div>`:'';
   return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(regionName(it.r))}</td>`
-    +`<td class="num wr ${wrClass(it.wr)}">${it.wr!=null?it.wr+'%':'-'}</td><td class="num">${it.lv??'-'}</td><td class="muted">${best||'-'}</td></tr>`;
+    +`<td class="num wr ${wrClass(it.wr)}">${it.wr!=null?it.wr+'%':'-'}</td><td class="num">${it.lv??'-'}</td><td class="muted hcol">${best||'-'}</td></tr>`;
 }
 function renderSearchResults(q,items){
   const f=q.toLowerCase();
   items.sort((a,b)=>{const rk=x=>{const n=(x.n||'').toLowerCase();return n===f?0:n.startsWith(f)?1:(x.prevMatch?3:2);};return rk(a)-rk(b);});
   let h=`<a class="back" onclick="goBoard('pro')">← ${t('to_ranking')}</a><div class="sect-t">${t('sr_title',{q:esc(q),n:items.length})}${items.length>=300?'+':''}</div>`;
-  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th>${t('c_name')}</th><th>${t('sr_region')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th>${t('sr_best')}</th></tr></thead><tbody>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th>${t('c_name')}</th><th>${t('sr_region')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="hcol">${t('sr_best')}</th></tr></thead><tbody>`;
   if(!items.length) h+=`<tr><td colspan="5" class="empty">${t('no_result')}</td></tr>`;
   for(const it of items) h+=searchRow(it);
   h+='</tbody></table></div>'; app.innerHTML=h;
@@ -871,7 +879,9 @@ document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')d
 
 function render(){
   hidePerkTip();
-  const h=decodeURIComponent(location.hash||'');
+  // ⚠️ 잘린 퍼센트 인코딩(#/search/%)이면 decodeURIComponent가 던진다. 그러면 이 화면 전환이 통째로 무시된다.
+  let h=location.hash||'';
+  try{ h=decodeURIComponent(h); }catch(e){}
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
@@ -899,8 +909,8 @@ function timeAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);
   return t('ago_hour',{n:Math.floor(s/3600)});}
 fetch('/api/status').then(r=>r.json()).then(st=>{
   if(st&&st.live){ window.LIVE=true;
-    const b=document.getElementById('seasonBadge');
-    if(st.last_refresh) b.title=timeAgo(st.last_refresh);
+    const b=document.getElementById('seasonBadge');   // 없을 수 있다(예외 나면 아래 render()가 안 돌아 실시간 버튼이 안 뜸)
+    if(b&&st.last_refresh) b.title=timeAgo(st.last_refresh);
     if(location.hash.startsWith('#/player/')) render(); // 버튼 노출 위해 재렌더
   }
 }).catch(()=>{});
