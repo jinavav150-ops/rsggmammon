@@ -344,7 +344,7 @@ function tabsHtml(){
   let modes=['pro','casual'].filter(m=>B[m]);
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
-  if(D.comps&&D.comps.pro) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
+  if(hasComps()) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
   h+=`<select class="tab hero ${SD().hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
   for(const hl of SD().hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
@@ -363,6 +363,12 @@ function regionOptions(){
 // 키는 pro_human / pro_bot / casual_human / casual_bot. 봇 낀 경기가 전체의 70%를 넘어서
 // 섞어 놓으면 사람 경기 성향이 묻힌다. 그래서 나눠서 보여준다.
 let compMode='pro', compBots='human';
+// 조합 탭 노출 여부. 옛 형식(pro/casual)과 새 형식(pro_human 등)을 둘 다 인정한다.
+function hasComps(){
+  const C=D.comps||{};
+  return ['pro','casual','pro_human','pro_bot','casual_human','casual_bot']
+    .some(k=>C[k]&&C[k].comps&&C[k].comps.length);
+}
 window.setCompMode=m=>{compMode=m;render();};
 window.setCompBots=b=>{compBots=b;render();};
 function renderComps(){
@@ -408,28 +414,34 @@ function renderComps(){
   app.innerHTML=h+'</tbody></table></div>';
 }
 
-// 필터는 글자를 칠 때마다 목록을 다시 그린다. 그대로 두면 입력창이 새로 생기면서
-// 포커스가 빠져 한 글자만 치고 꺼진 것처럼 보인다. 그래서 커서 위치까지 되돌려준다.
+// 필터는 글자를 칠 때마다 목록을 다시 그린다. 이때 화면 전체를 다시 그리면 입력창까지
+// 새로 만들어져서 한글 조합이 끊긴다(ㅂ 두 번 눌러 ㅍ을 만들려 해도 "ㅂㅂ"이 됨).
+// 그래서 입력창은 그대로 두고 목록(#boardBody)과 개수 표시만 갈아끼운다.
 window.onFilterInput=el=>{
-  const pos=el.selectionStart;
-  curFilter=el.value; curPage=0; render();
-  const ne=document.getElementById('boardFilter');
-  if(ne){ ne.focus(); try{ ne.setSelectionRange(pos,pos); }catch(e){} }
+  curFilter=el.value; curPage=0;
+  const body=document.getElementById('boardBody');
+  if(!body){ render(); return; }
+  body.innerHTML=boardBodyHtml();
+  const cnt=document.getElementById('boardCount');
+  if(cnt) cnt.innerHTML=boardCountHtml();
 };
-function renderBoard(){
+function boardRows(){
   const ids=B[curBoard]||[];
   let rows=ids.map((id,i)=>({id,rank:i+1}));
   if(curRegion) rows=rows.filter(r=>P[r.id].r===curRegion);
   if(curFilter){const f=curFilter.toLowerCase(); rows=rows.filter(r=>P[r.id].n.toLowerCase().includes(f));}
+  return rows;
+}
+function boardCountHtml(){
+  const size=BM[curBoard]?.size||(B[curBoard]||[]).length;
+  return `${boardLabel(curBoard)} · ${t('total_n',{n:size.toLocaleString()})}${curRegion?` · ${regionName(curRegion)} ${boardRows().length.toLocaleString()}`:''}`;
+}
+function boardBodyHtml(){
+  const rows=boardRows();
   const total=rows.length, pages=Math.max(1,Math.ceil(total/PAGE));
   if(curPage>=pages)curPage=0;
   const slice=rows.slice(curPage*PAGE,curPage*PAGE+PAGE);
-  const size=BM[curBoard]?.size||ids.length;
-  let h=tabsHtml();
-  h+=`<div class="row-filter">${regionOptions()}
-    <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
-    <span class="muted">${boardLabel(curBoard)} · ${t('total_n',{n:size.toLocaleString()})}${curRegion?` · ${regionName(curRegion)} ${total.toLocaleString()}`:''}</span></div>`;
-  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
+  let h=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
   for(const r of slice){const p=P[r.id];const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
     h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}</td>
@@ -439,11 +451,25 @@ function renderBoard(){
       <td class="num">${p.lv??'-'}</td><td class="num">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;
   }
   h+='</tbody></table>';
-  h+=`<div class="pager"><button onclick="curPage=0;render()" ${curPage===0?'disabled':''}>«</button>
-    <button onclick="curPage--;render()" ${curPage===0?'disabled':''}>${t('prev')}</button>
+  // 페이지 이동은 목록만 다시 그린다(입력창 유지)
+  h+=`<div class="pager"><button onclick="goPage(0)" ${curPage===0?'disabled':''}>«</button>
+    <button onclick="goPage(${curPage-1})" ${curPage===0?'disabled':''}>${t('prev')}</button>
     <span>${curPage+1} / ${pages}</span>
-    <button onclick="curPage++;render()" ${curPage>=pages-1?'disabled':''}>${t('next')}</button>
-    <button onclick="curPage=${pages-1};render()" ${curPage>=pages-1?'disabled':''}>»</button></div></div>`;
+    <button onclick="goPage(${curPage+1})" ${curPage>=pages-1?'disabled':''}>${t('next')}</button>
+    <button onclick="goPage(${pages-1})" ${curPage>=pages-1?'disabled':''}>»</button></div></div>`;
+  return h;
+}
+window.goPage=n=>{
+  curPage=Math.max(0,n);
+  const body=document.getElementById('boardBody');
+  if(body) body.innerHTML=boardBodyHtml(); else render();
+};
+function renderBoard(){
+  let h=tabsHtml();
+  h+=`<div class="row-filter">${regionOptions()}
+    <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
+    <span class="muted" id="boardCount">${boardCountHtml()}</span></div>`;
+  h+=`<div id="boardBody">${boardBodyHtml()}</div>`;
   app.innerHTML=h;
 }
 
