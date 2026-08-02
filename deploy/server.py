@@ -31,6 +31,8 @@ try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8
 except Exception: PERK_KR={}
 try: COMPS=json.load(open(os.path.join(DATA,"comps.json"),encoding="utf-8"))
 except Exception: COMPS={}   # 없으면 조합 탭이 안 나올 뿐, 나머지는 정상
+try: HEROSTAT=json.load(open(os.path.join(DATA,"heroes.json"),encoding="utf-8"))
+except Exception: HEROSTAT={}  # 없으면 티어 탭만 안 나온다 (build_heroes.py로 생성)
 C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","kills":"85762499",
 "deaths":"85762505","damage":"85762483","heal":"85762489","double":"85768264","triple":"85768275",
 "final":"85762019","fire":"85842040","playtime":"85762515","pro_rating":"111239832",
@@ -434,7 +436,7 @@ def build_site_data():
         for pid,v in PERK_KR.items():
             if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
             elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
-        out={"perk_meta":pmeta,"comps":COMPS,
+        out={"perk_meta":pmeta,"comps":COMPS,"hstat":HEROSTAT,
             "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)

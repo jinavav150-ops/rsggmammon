@@ -58,6 +58,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mv:hover{border-color:var(--acc)}
 .mv b{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
 .mv i{font-style:normal;font-weight:800;color:var(--win)}
+.warn{color:var(--lose)}                       /* 표본 얕음 경고 */
+.card>.row-filter{padding:12px 12px 0;margin-bottom:12px}   /* 카드 안에 들어간 선택줄 */
 .name{font-weight:700}
 .reg{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:2px}
 .wr{font-weight:700}.wrh{color:var(--win)}.wrl{color:var(--lose)}
@@ -254,7 +256,7 @@ window.setSeason=v=>{
   curSeason=v; B=SD().boards; BM=SD().board_meta;
   try{localStorage.setItem('rsgg_season',v);}catch(e){}
   // 고른 시즌에 없는 보드를 보고 있었으면 프로/캐주얼로 되돌린다
-  if(curBoard!=='comps' && !B[curBoard]){
+  if(curBoard!=='comps' && curBoard!=='tiers' && !B[curBoard]){
     curBoard = B['pro']?'pro':'casual';
     location.hash='#/board/'+encodeURIComponent(curBoard);   // 해시도 맞춰야 render()가 안 되돌린다
   }
@@ -353,6 +355,7 @@ function tabsHtml(){
   let modes=['pro','casual'].filter(m=>B[m]);
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
+  if(hasTiers()) h+=`<div class="tab ${curBoard==='tiers'?'on':''}" onclick="goBoard('tiers')">${t('tab_tiers')}</div>`;
   if(hasComps()) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
   h+=`<select class="tab hero ${SD().hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
@@ -380,6 +383,87 @@ window.onRegionChange=el=>{
   const cnt=document.getElementById('boardCount');
   if(cnt) cnt.innerHTML=boardCountHtml();
 };
+
+// ── 티어: 캐릭터 승률 · 상성 · 2인 듀오 ───────────────────────────
+// heroes.json(build_heroes.py가 미리 집계)을 그대로 그린다. 갈래는 조합 탭과 동일하게
+// 프로/캐주얼 × 사람만/봇포함 4가지. 봇전과 대인전은 순위가 아예 뒤집히므로 꼭 나눠 본다.
+let tierMode='casual', tierBots='human', tierHero='';
+function hasTiers(){
+  const S=D.hstat||{};
+  return ['pro_human','pro_bot','casual_human','casual_bot'].some(k=>S[k]&&S[k].heroes&&S[k].heroes.length);
+}
+window.setTierMode=m=>{tierMode=m;render();};
+window.setTierBots=b=>{tierBots=b;render();};
+window.setTierHero=v=>{tierHero=v;render();};
+function renderTiers(){
+  const S=D.hstat||{};
+  const has=k=>S[k]&&S[k].heroes&&S[k].heroes.length;
+  const key=(m,b)=>m+'_'+b;
+  let h=tabsHtml();
+  if(!has(key(tierMode,tierBots))){
+    outer: for(const m of ['casual','pro']) for(const b of ['human','bot'])
+      if(has(key(m,b))){ tierMode=m; tierBots=b; break outer; }
+  }
+  const d=S[key(tierMode,tierBots)];
+  if(!d){ app.innerHTML=h+`<div class="card"><div class="empty">${t('comps_empty')}</div></div>`; return; }
+  h+='<div class="tabs" style="margin-top:2px">';
+  for(const m of ['pro','casual'])
+    if(['human','bot'].some(b=>has(key(m,b))))
+      h+=`<div class="tab ${tierMode===m?'on':''}" onclick="setTierMode('${m}')">${boardLabel(m)}</div>`;
+  h+='</div><div class="tabs" style="margin-top:6px">';
+  for(const b of ['human','bot'])
+    h+=`<div class="tab ${tierBots===b?'on':''}" onclick="setTierBots('${b}')">${t(b==='human'?'comps_human':'comps_bot')}</div>`;
+  h+='</div>';
+  const thin=d.matches<1000?` · <span class="warn">${t('tier_thin')}</span>`:'';
+
+  // 1) 캐릭터 승률·픽률
+  h+=`<div class="sect-t">${ICON.trophy} ${t('tier_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('tier_note',{m:d.matches.toLocaleString(),f:S.from||'',t:S.to||''})}${thin}</span></div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_hero')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+  const maxPick=Math.max(...d.heroes.map(x=>x[4]),0.01);
+  d.heroes.forEach((c,i)=>{
+    h+=`<tr onclick="setTierHero('${c[0]}')" style="cursor:pointer"><td class="rank ${medalCls(i+1)}">${i+1}</td>
+      <td><span class="comp">${heroImg(c[0])}<b>${hk(c[0])}</b></span></td>
+      <td class="num wr ${wrClass(c[3])}">${c[3]}%</td>
+      <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/maxPick*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
+      <td class="num">${c[1].toLocaleString()}</td></tr>`;
+  });
+  h+='</tbody></table></div>';
+
+  // 2) 상성 — 13×13 표는 모바일에서 못 읽는다. 기준 캐릭터 하나를 골라 상대별로 세로로 편다.
+  const C=d.counters||{};
+  const heroList=d.heroes.map(x=>x[0]);
+  if(!C[tierHero]) tierHero=heroList.find(x=>C[x])||'';
+  if(tierHero&&C[tierHero]){
+    const rows=Object.entries(C[tierHero]).sort((a,b)=>b[1][1]-a[1][1]);
+    h+=`<div class="sect-t">${ICON.target} ${t('counters_title')}</div>`;
+    h+=`<div class="card"><div class="row-filter"><span class="muted">${t('counters_pick')}</span>
+      <select onchange="setTierHero(this.value)">`;
+    for(const hn of heroList) if(C[hn]) h+=`<option value="${hn}" ${tierHero===hn?'selected':''}>${hk(hn)}</option>`;
+    h+=`</select><span class="comp">${heroImg(tierHero)}<b>${hk(tierHero)}</b></span></div>
+      <table><thead><tr><th>${t('counters_vs')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+    for(const [op,v] of rows)
+      h+=`<tr><td><span class="comp">${heroImg(op)}<b>${hk(op)}</b></span></td>
+        <td class="num wr ${wrClass(v[1])}">${v[1]}%</td><td class="num">${v[0].toLocaleString()}</td></tr>`;
+    h+='</tbody></table></div>';
+  }
+
+  // 3) 2인 듀오
+  if(d.duos&&d.duos.length){
+    h+=`<div class="sect-t">${ICON.trophy} ${t('duos_title')} <span class="muted" style="font-size:12px;font-weight:400">${t('duos_note',{n:d.min_duo})}</span></div>`;
+    h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
+    const mp=Math.max(...d.duos.map(x=>x[4]),0.01);
+    d.duos.forEach((c,i)=>{
+      const hs=c[0].split('+');
+      h+=`<tr><td class="rank ${medalCls(i+1)}">${i+1}</td>
+        <td><span class="comp">${hs.map(x=>heroImg(x)).join('')}<b>${hs.map(x=>hk(x)).join(' · ')}</b></span></td>
+        <td class="num wr ${wrClass(c[3])}">${c[3]}%</td>
+        <td class="num hcol"><span class="bar"><i style="width:${Math.round(c[4]/mp*100)}%"></i></span> <span class="muted">${c[4]}%</span></td>
+        <td class="num">${c[1].toLocaleString()}</td></tr>`;
+    });
+    h+='</tbody></table></div>';
+  }
+  app.innerHTML=h;
+}
 
 // 3인 조합 순위. comps.json(로컬에서 미리 집계한 것)을 그대로 표로 그린다.
 // 키는 pro_human / pro_bot / casual_human / casual_bot. 봇 낀 경기가 전체의 70%를 넘어서
@@ -703,6 +787,7 @@ function render(){
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
+  if(curBoard==='tiers') return renderTiers();
   if(curBoard==='comps') return renderComps();
   if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
   renderBoard();
