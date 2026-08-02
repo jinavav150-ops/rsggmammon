@@ -135,16 +135,35 @@ def redis_cmd(*args):
         REDIS_STATE.update(ok=False,err=f"{type(e).__name__}{'/'+str(code) if code else ''}")
         return None
 def hist_load():
+    """파일(새로 수집한 기준선)과 Redis(누적된 개명 이력)를 **합친다.**
+    ⚠️ 예전엔 Redis가 있으면 파일을 통째로 무시했다. 그래서 새로 수집한 유저가
+       이름 목록에 안 들어가 검색이 안 되는 사고가 났다(2026-08-01)."""
+    base={}
+    try:
+        base=json.load(open(os.path.join(DATA,"name_history.json"),encoding="utf-8"))
+    except Exception as e:
+        print("이름이력 파일 로드 실패:",e)
+    n_file=len(base)
+    n_redis=0
     raw=redis_cmd("GET",HIST_KEY)
     if raw:
         try:
-            d=json.loads(raw); NAME_HIST.clear(); NAME_HIST.update(d)
-            print(f"이름이력 Redis 로드 {len(NAME_HIST)}명"); return
-        except Exception: pass
-    try:
-        d=json.load(open(os.path.join(DATA,"name_history.json"),encoding="utf-8"))
-        NAME_HIST.clear(); NAME_HIST.update(d); print(f"이름이력 baseline 로드 {len(NAME_HIST)}명")
-    except Exception as e: print("이름이력 로드 실패:",e)
+            d=json.loads(raw); n_redis=len(d)
+            for pid,rec in d.items():
+                cur=base.get(pid)
+                if not cur:
+                    base[pid]=rec               # Redis에만 있는 유저
+                    continue
+                # 둘 다 있으면: 옛 닉네임은 합치고, 현재 닉네임은 파일(최신 수집) 우선
+                merged=list(cur.get("prev") or [])
+                for pn in (rec.get("prev") or []):
+                    if pn and pn not in merged: merged.append(pn)
+                cur["prev"]=merged
+                if not cur.get("cur"): cur["cur"]=rec.get("cur")
+        except Exception as e:
+            print("이름이력 Redis 해석 실패:",e)
+    NAME_HIST.clear(); NAME_HIST.update(base)
+    print(f"이름이력 {len(NAME_HIST)}명 (파일 {n_file} + Redis {n_redis} 병합)")
 def hist_save():
     if UPSTASH_URL and UPSTASH_TOKEN:
         redis_cmd("SET",HIST_KEY,json.dumps(NAME_HIST,ensure_ascii=False))

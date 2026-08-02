@@ -388,6 +388,14 @@ function renderComps(){
   app.innerHTML=h+'</tbody></table></div>';
 }
 
+// 필터는 글자를 칠 때마다 목록을 다시 그린다. 그대로 두면 입력창이 새로 생기면서
+// 포커스가 빠져 한 글자만 치고 꺼진 것처럼 보인다. 그래서 커서 위치까지 되돌려준다.
+window.onFilterInput=el=>{
+  const pos=el.selectionStart;
+  curFilter=el.value; curPage=0; render();
+  const ne=document.getElementById('boardFilter');
+  if(ne){ ne.focus(); try{ ne.setSelectionRange(pos,pos); }catch(e){} }
+};
 function renderBoard(){
   const ids=B[curBoard]||[];
   let rows=ids.map((id,i)=>({id,rank:i+1}));
@@ -399,7 +407,7 @@ function renderBoard(){
   const size=BM[curBoard]?.size||ids.length;
   let h=tabsHtml();
   h+=`<div class="row-filter">${regionOptions()}
-    <input class="mini" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="curFilter=this.value;curPage=0;render()" style="flex:1;min-width:140px">
+    <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
     <span class="muted">${boardLabel(curBoard)} · ${t('total_n',{n:size.toLocaleString()})}${curRegion?` · ${regionName(curRegion)} ${total.toLocaleString()}`:''}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
