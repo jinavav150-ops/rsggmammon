@@ -11,7 +11,10 @@ import socket, struct, json, os, time, threading, http.server, urllib.parse, url
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
 PID=os.environ.get("RS_PID",""); SEC=os.environ.get("RS_SEC","")  # 환경변수에서 (코드에 secret 없음)
-SEASON="202607"
+# 시즌은 박아두지 않는다. 서버에 물어서 참가자가 있는 달을 찾는다.
+# (예전엔 "202607"이 박혀 있어서 8월이 됐는데 7월 보드만 갱신하는 사고가 났다.)
+SEASON_KEEP=2      # 사이트에서 고를 수 있는 시즌 수 (현재 + 직전)
+SEASON_LOOKBACK=6  # 몇 달 전까지 찾아볼지
 LB_REFRESH_SEC=1800   # 30분
 WEB_PORT=int(os.environ.get("PORT","8000"))
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -102,7 +105,7 @@ def parse_acc(acc):
 # ── 캐시 ─────────────────────────────────────────────
 LOCK=threading.Lock()
 CACHE={"boards":{},"board_meta":{},"board_labels":[],"hero_labels":[],
-       "players":{},"player_ranks":{},"season":SEASON,"last_refresh":0}
+       "players":{},"seasons":[],"sdata":{},"player_ranks":{},"last_refresh":0}
 NAME_HIST={}
 # ── 닉네임 이력 (Upstash Redis 단일키 저장 + 백그라운드 전원검사) ──
 # Upstash 콘솔은 UPSTASH_REDIS_REST_URL/TOKEN 이라는 이름으로 알려준다.
@@ -192,22 +195,66 @@ def to_compact_from_raw(v):
         "tr":v.get("triple"),"fh":v.get("final"),"pt":v.get("playtime_h"),"pm":v.get("pro_matches"),
         "rm":v.get("recent_matches",[]),"h":heroes}
 
+def month_codes(back=SEASON_LOOKBACK):
+    """이번 달부터 거슬러 올라간 YYYYMM 목록."""
+    import datetime
+    d=datetime.date.today(); y,m=d.year,d.month; out=[]
+    for _ in range(back):
+        out.append(f"{y:04d}{m:02d}")
+        m-=1
+        if m==0: m=12; y-=1
+    return out
+
+def lb_get(s,name,rid,top=20000):
+    s.sendall(fr({"request_id":rid,"type":"get_leaderboard"},{"leaderboard_name":name,"top_size":top}))
+    for _ in range(50):
+        env,b=rd(s)
+        if env.get("type")=="get_leaderboard" and env.get("request_id")==rid: return b
+    return None
+
+def find_seasons(s):
+    """참가자가 있는 시즌만 최신순으로. 프로가 아직 안 열려도 캐주얼이 있으면 유효."""
+    found=[]; rid=300
+    for code in month_codes():
+        total=0
+        for nm in (f"rating_casual_0_{code}", f"rating_pro_0_{code}"):
+            rid+=1
+            try: b=lb_get(s,nm,rid,top=1)
+            except Exception: b=None
+            total += (b or {}).get("leaderboard_size") or 0
+        if total: found.append(code)
+        if len(found)>=SEASON_KEEP: break
+    return found
+
 def label_of(kind,label): return label if kind=="hero" else ("pro" if kind=="pro" else "casual")
 # 보드 키는 언어중립(pro/casual/영문 캐릭터명). 표시 이름은 브라우저가 언어별로 붙인다.
 
 def apply_leaderboards(lb):
-    boards={}; meta={}; ranks={}; blabels=[]; hlabels=[]
-    for name,mb in lb["boards"].items():
-        lab=label_of(mb["kind"],mb["label"]); blabels.append(lab)
-        meta[lab]={"size":mb["size"],"kind":mb["kind"]}
-        if mb["kind"]=="hero": hlabels.append(lab)
-        ordered=[]
-        for e in mb["entries"]:
-            pid=e["player_id"]; ordered.append(pid); ranks.setdefault(pid,{})[lab]=[e["rank"],e["score"]]
-        boards[lab]=ordered
+    """시즌별로 보드를 정리한다. ranks는 {유저: {시즌: {보드: [순위, 점수]}}}."""
+    seasons=lb.get("seasons") or []
+    by_season=lb.get("boards") or {}
+    # 옛 단일시즌 형식({"season":..., "boards":{보드명:...}})도 읽을 수 있게
+    if seasons and not isinstance(next(iter(by_season.values()),{}), dict):
+        by_season={}
+    if not seasons:
+        seasons=[lb.get("season") or "?"]; by_season={seasons[0]: lb.get("boards") or {}}
+    sdata={}; ranks={}
+    for season in seasons:
+        boards={}; meta={}; blabels=[]; hlabels=[]
+        for name,mb in (by_season.get(season) or {}).items():
+            lab=label_of(mb["kind"],mb["label"]); blabels.append(lab)
+            meta[lab]={"size":mb["size"],"kind":mb["kind"]}
+            if mb["kind"]=="hero": hlabels.append(lab)
+            ordered=[]
+            for e in mb["entries"]:
+                pid=e["player_id"]; ordered.append(pid)
+                ranks.setdefault(pid,{}).setdefault(season,{})[lab]=[e["rank"],e["score"]]
+            boards[lab]=ordered
+        sdata[season]={"boards":boards,"board_meta":meta,
+                       "board_labels":blabels,"hero_labels":hlabels}
     with LOCK:
-        CACHE.update({"boards":boards,"board_meta":meta,"board_labels":blabels,
-            "hero_labels":hlabels,"player_ranks":ranks,"last_refresh":int(time.time())})
+        CACHE.update({"seasons":seasons,"sdata":sdata,"player_ranks":ranks,
+                      "last_refresh":int(time.time())})
 
 def build_site_data():
     with LOCK:
@@ -218,33 +265,37 @@ def build_site_data():
         for pid,v in PERK_KR.items():
             if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
             elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
-        out={"perk_meta":pmeta,"comps":COMPS,"season":CACHE["season"],"board_labels":CACHE["board_labels"],"hero_labels":CACHE["hero_labels"],
-            "board_meta":CACHE["board_meta"],"boards":CACHE["boards"],"players":players,
+        out={"perk_meta":pmeta,"comps":COMPS,
+            "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],"players":players,
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     with open(os.path.join(HERE,"site_data.js"),"w",encoding="utf-8") as f:
         f.write("window.DATA="); json.dump(out,f,ensure_ascii=False,separators=(",",":")); f.write(";")
 
 def refresh_leaderboards():
     print("[갱신] 리더보드 수집...")
-    s=connect(); rid=500; result={"season":SEASON,"boards":{}}; allids=set()
-    boards=[("pro","pro",f"rating_pro_0_{SEASON}"),("casual","casual",f"rating_casual_0_{SEASON}")]
-    boards+=[("hero",HEROES[h],f"rating_heroes_{h}_{SEASON}") for h in HEROES]
-    for kind,label,name in boards:
-        rid+=1; s.sendall(fr({"request_id":rid,"type":"get_leaderboard"},{"leaderboard_name":name,"top_size":20000}))
-        body=None
-        for _ in range(50):
-            env,b=rd(s)
-            if env.get("type")=="get_leaderboard" and env.get("request_id")==rid: body=b; break
-        if not body: continue
-        ids=body.get("top_player_ids",[]); sc=body.get("top_player_scores",[])
-        result["boards"][name]={"kind":kind,"label":label,"size":body.get("leaderboard_size"),
-            "entries":[{"rank":i+1,"player_id":pid,"score":s2} for i,(pid,s2) in enumerate(zip(ids,sc))]}
-        allids.update(ids)
+    s=connect(); rid=1000; allids=set()
+    seasons=find_seasons(s)          # 달이 바뀌면 여기서 자동으로 새 시즌을 잡는다
+    result={"seasons":seasons,"boards":{}}
+    for season in seasons:
+        sb={}
+        boards=[("pro","pro",f"rating_pro_0_{season}"),("casual","casual",f"rating_casual_0_{season}")]
+        boards+=[("hero",HEROES[h],f"rating_heroes_{h}_{season}") for h in HEROES]
+        for kind,label,name in boards:
+            rid+=1
+            try: body=lb_get(s,name,rid)
+            except Exception: body=None
+            if not body: continue
+            ids=body.get("top_player_ids",[]); sc=body.get("top_player_scores",[])
+            if not ids: continue      # 아직 안 열린 보드(예: 시즌 초 프로)
+            sb[name]={"kind":kind,"label":label,"size":body.get("leaderboard_size"),
+                "entries":[{"rank":i+1,"player_id":pid,"score":s2} for i,(pid,s2) in enumerate(zip(ids,sc))]}
+            allids.update(ids)
+        result["boards"][season]=sb
     s.close()
     result["unique_player_ids"]=sorted(allids)
     json.dump(result,open(os.path.join(DATA,"leaderboards.json"),"w",encoding="utf-8"),ensure_ascii=False)
     apply_leaderboards(result); build_site_data()
-    print(f"[갱신] 완료 · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
+    print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
 
 def scheduler():
     while True:
@@ -372,7 +423,7 @@ class H(http.server.BaseHTTPRequestHandler):
         u=urllib.parse.urlparse(self.path); path=u.path
         if path=="/api/status":
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
-                "players":len(CACHE["players"]),"boards":len(CACHE["boards"]),"season":CACHE["season"],
+                "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
                 "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
                 "names":len(NAME_HIST)}
             return self._send(200,json.dumps(st))

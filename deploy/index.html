@@ -29,6 +29,8 @@ header{background:var(--panel);border-bottom:1px solid var(--line);position:stic
 .owner svg{width:14px;height:14px;fill:none;stroke:#e8b923;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round}
 footer .crown{width:15px;height:15px;fill:none;stroke:#e8b923;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vertical-align:-2px}
 .badge{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;color:var(--mut)}
+select.badge{cursor:pointer;font-family:inherit}
+select.badge:hover{border-color:var(--acc);color:var(--tx)}
 .search{flex:1;min-width:200px;display:flex;gap:8px}
 .search input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:9px 12px;font-size:14px;outline:none}
 .search input:focus{border-color:var(--acc)}
@@ -196,7 +198,7 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
       <path d="M16 6.3v3.3M16 20.4v3.3M6.9 15h3.3M21.8 15h3.3" stroke="url(#lg)" stroke-width="1.6" stroke-linecap="round"/>
     </svg>
     RS<span>.GG</span></a>
-  <span class="badge" id="seasonBadge">시즌</span>
+  <select class="badge" id="seasonSel" onchange="setSeason(this.value)"></select>
   <span class="owner">
     <svg viewBox="0 0 24 24"><path d="M4 9l4 3 4-6 4 6 4-3-1.5 10H5.5L4 9Z"/><path d="M5.5 19h13"/></svg>
     by <span class="mammon">MAMMON</span></span>
@@ -227,7 +229,28 @@ footer{color:var(--mut);font-size:12px;text-align:center;padding:24px}
 <script src="i18n.js"></script>
 <script src="site_data.js"></script>
 <script>
-const D=window.DATA, P=D.players, B=D.boards, BM=D.board_meta;
+const D=window.DATA, P=D.players;
+// 시즌 여러 개를 담고 있고, 고른 시즌의 보드만 꺼내 쓴다
+const SEASONS=(D.seasons&&D.seasons.length)?D.seasons:['?'];
+function pickSeason(){
+  try{const v=localStorage.getItem('rsgg_season'); if(v&&SEASONS.includes(v)) return v;}catch(e){}
+  return SEASONS[0];
+}
+let curSeason=pickSeason();
+const SD=()=>(D.sdata&&D.sdata[curSeason])||{boards:{},board_meta:{},board_labels:[],hero_labels:[]};
+let B=SD().boards, BM=SD().board_meta;
+function seasonLabel(c){return c&&c.length===6?c.slice(0,4)+'-'+c.slice(4):c;}
+window.setSeason=v=>{
+  if(!SEASONS.includes(v))return;
+  curSeason=v; B=SD().boards; BM=SD().board_meta;
+  try{localStorage.setItem('rsgg_season',v);}catch(e){}
+  // 고른 시즌에 없는 보드를 보고 있었으면 프로/캐주얼로 되돌린다
+  if(curBoard!=='comps' && !B[curBoard]){
+    curBoard = B['pro']?'pro':'casual';
+    location.hash='#/board/'+encodeURIComponent(curBoard);   // 해시도 맞춰야 render()가 안 되돌린다
+  }
+  curPage=0; applyStatic(); render();
+};
 const PMETA=D.perk_meta||{};
 
 // ── 다국어 ────────────────────────────────────────────
@@ -264,7 +287,8 @@ document.addEventListener('click',closeLangMenu);
 function applyStatic(){
   document.documentElement.lang=LANG;
   document.title=t('site_title');
-  document.getElementById('seasonBadge').textContent=t('season')+' '+D.season.slice(0,4)+'-'+D.season.slice(4);
+  const sel=document.getElementById('seasonSel');
+  sel.innerHTML=SEASONS.map(c=>`<option value="${c}" ${c===curSeason?'selected':''}>${t('season')} ${seasonLabel(c)}</option>`).join('');
   document.getElementById('q').placeholder=t('search_ph');
   document.getElementById('searchLbl').textContent=t('search');
   document.getElementById('footerTxt').textContent=t('footer',{n:D.generated_count.toLocaleString()});
@@ -317,13 +341,13 @@ let curBoard='pro', curPage=0, curRegion='', curFilter='';
 const PAGE=100;
 
 function tabsHtml(){
-  let modes=['pro','casual'];
+  let modes=['pro','casual'].filter(m=>B[m]);
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
   if(D.comps&&D.comps.pro) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
-  h+=`<select class="tab hero ${D.hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
+  h+=`<select class="tab hero ${SD().hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
-  for(const hl of D.hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
+  for(const hl of SD().hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
   h+='</select></div>';
   return h;
 }
@@ -379,7 +403,7 @@ function renderBoard(){
     <span class="muted">${boardLabel(curBoard)} · ${t('total_n',{n:size.toLocaleString()})}${curRegion?` · ${regionName(curRegion)} ${total.toLocaleString()}`:''}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num">${t('c_level')}</th><th class="num">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
-  for(const r of slice){const p=P[r.id];const sc=(p.rk[curBoard]||[])[1];
+  for(const r of slice){const p=P[r.id];const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
     h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}</td>
       <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(regionName(p.r))}</span></td>
       <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
@@ -431,10 +455,10 @@ function renderPlayer(id){
     ${p.pm?`<div class="stat"><div class="k">${t('s_pro_matches')}</div><div class="v">${fmt(p.pm)}</div></div>`:''}
   </div></div>`;
   // 랭킹 (모드 + 캐릭터)
-  const rk=p.rk||{};
+  const rk=(p.rk&&p.rk[curSeason])||{};   // 랭킹은 {시즌:{보드:[순위,점수]}}
   const modeRows=['pro','casual'].filter(m=>rk[m]);
-  const heroRows=D.hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
-  h+=`<div class="sect-t">${ICON.trophy} ${t('rank_section')} (${t('season')} ${D.season.slice(0,4)}-${D.season.slice(4)})</div><div class="card" style="overflow-x:auto"><table>
+  const heroRows=SD().hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
+  h+=`<div class="sect-t">${ICON.trophy} ${t('rank_section')} (${t('season')} ${seasonLabel(curSeason)})</div><div class="card" style="overflow-x:auto"><table>
     <thead><tr><th>${t('c_type')}</th><th class="num">${t('c_rank')}</th><th class="num">${t('c_score')}</th><th class="hcol">${t('c_top_pct')}</th></tr></thead><tbody>`;
   const addRow=(lab,isHero)=>{const [rank,score]=rk[lab];const size=BM[lab]?.size||rank;const pct=Math.max(0.1,(rank/size*100));
     h+=`<tr><td>${isHero?ICON.target+' ':''}${boardLabel(lab)}</td><td class="num rank ${medalCls(rank)}" style="text-align:right">${rank.toLocaleString()}</td>
@@ -529,7 +553,7 @@ function matchesHtml(matches){
 }
 window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
 function searchRow(it){
-  let best='',bestRank=1e9; const rk=it.rk||{};
+  let best='',bestRank=1e9; const rk=(it.rk&&it.rk[curSeason])||{};
   for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=boardLabel(lab)+' '+t('rank_suffix',{r:rk[lab][0]});}}
   const prevTag=it.prevMatch?`<div class="muted" style="font-size:11px">↳ ${t('old_nick')} <b>${esc(it.prevMatch)}</b> → ${t('now_nick')} <b>${esc(it.n)}</b></div>`:'';
   return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(regionName(it.r))}</td>`
@@ -573,6 +597,7 @@ function render(){
   if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
   if(curBoard==='comps') return renderComps();
+  if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
   renderBoard();
 }
 window.addEventListener('hashchange',render);
