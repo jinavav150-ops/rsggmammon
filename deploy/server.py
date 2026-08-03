@@ -265,6 +265,7 @@ def hist_observe(pid,name):
             NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
         if nname(rec.get("cur"))!=name:
             old=nname(rec.get("cur"))
+            # (여기부터는 '지금 이 순간의 이름'이 확실할 때만 — 과거 이름은 hist_note_past로)
             # ⚠️ 기존 리스트를 제자리에서 insert하면 안 된다. 이 리스트는
             #    CACHE["players"]·site_data 빌드·/api 응답이 같은 객체를 참조하는데,
             #    그쪽 json.dumps는 LOCK 밖에서 돈다. **새 리스트를 만들어 재할당**하면
@@ -276,6 +277,41 @@ def hist_observe(pid,name):
             rec["prev"]=prev; rec["cur"]=name
             return list(prev), True
         return list(rec.get("prev",[])), False
+
+def hist_note_past(pid,name):
+    """경기 기록에 남은 '그 당시 이름'을 옛 닉네임 목록에 추가한다. 반환: 추가 여부
+    ⚠️ hist_observe로 넣으면 안 된다 — 경기 기록의 이름은 **과거형**이라, 옛 경기를
+       나중에 열람하면 개명이 거꾸로 기록된다(현재 이름이 옛 이름으로 밀려나는 사고).
+       그래서 cur는 절대 건드리지 않고 prev에만 넣는다.
+    ⚠️ 모르는 pid는 만들지 않는다 — 경기에는 수집 대상 밖 유저(봇 포함)도 섞여 있어서
+       여기서 새 항목을 만들면 이력이 정체불명 유저로 불어난다."""
+    name=nname(name)
+    if not name: return False
+    with LOCK:
+        rec=NAME_HIST.get(pid)
+        if rec is None: return False
+        if name==nname(rec.get("cur")) or name in (rec.get("prev") or []): return False
+        # 재할당(제자리 append 금지 — 이 리스트는 LOCK 밖 json.dumps가 참조한다)
+        rec["prev"]=list(rec.get("prev") or [])+[name]
+        return True
+
+def harvest_match_names(matches):
+    """경기 기록 목록에서 6인 전원의 (pid, 당시 이름)을 이력에 반영. 반환: 추가 건수
+    스윕(6시간) 사이에 스쳐간 이름도 경기에는 남는다 — 3일에 4번 개명한 유저의
+    중간 이름이 검색 안 되던 실제 사례(2026-08-03, baizaRsanma)를 이걸로 잡는다."""
+    noted=0
+    for m in (matches or []):
+        for pl in m.get("players",[]):
+            if pl.get("id") and pl.get("n") and hist_note_past(pl["id"],pl["n"]): noted+=1
+    if noted:
+        with LOCK:
+            for m in (matches or []):
+                for pl in m.get("players",[]):
+                    rid=pl.get("id")
+                    if rid in CACHE["players"] and rid in NAME_HIST:
+                        CACHE["players"][rid]["prev"]=NAME_HIST[rid].get("prev",[])
+        hist_save()
+    return noted
 
 # ── 랭킹 변동 추적 (일별 스냅샷) ──────────────────────────────────
 # 매일 KST 0시 이후 첫 갱신 때 그날의 랭킹 전체를 "기준선"으로 저장한다.
@@ -714,6 +750,9 @@ def live_player(pid):
         try:
             mh=(acc.get("match_state") or {}).get("match_history",[])
             comp2["matches"]=fetch_matches(s, mh, pid)
+            # 경기 기록에서 '그 당시 닉네임' 수확 — 본인 포함 6인 전원
+            if harvest_match_names(comp2["matches"]):
+                with LOCK: comp2["prev"]=list(NAME_HIST.get(pid,{}).get("prev",[]))  # 방금 찾은 이름도 바로 표시
         except Exception as e:
             comp2["matches"]=[]
         return comp2
