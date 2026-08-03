@@ -29,6 +29,14 @@ VALID_PID=re.compile(r"^[0-9a-fA-F-]{8,40}$")   # 게임 player_id(UUID) 형식�
 def _on(v): return str(v).strip().lower() not in ("","0","false","no","off")
 MAINTENANCE=_on(os.environ.get("MAINTENANCE",""))
 MAINT_KEY=os.environ.get("MAINTENANCE_KEY","").strip()
+# MAINT_BLANK=1 이면 안내 페이지조차 안 보여준다 — 로고·문구 없는 빈 화면(404).
+# 안내문에 RS.GG 로고가 있어서 "사이트 윗부분이 보인다"고 느껴지는 걸 없애기 위한 것.
+# ⚠️ 404 + **본문 있음**이어야 브라우저가 자기 오류화면 대신 빈 화면을 그린다.
+#    본문을 아예 비우면 크롬이 "HTTP ERROR 404"를 대신 띄운다.
+MAINT_BLANK=_on(os.environ.get("MAINT_BLANK",""))
+BLANK_HTML=('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="robots" content="noindex,nofollow"><title>Not Found</title>'
+            '</head><body></body></html>')
 # ── 게스트 초대 (점검 중에 특정인에게 시간제한 열람 허용) ──
 # 발급: /api/guest?key=<MAINTENANCE_KEY>&hours=2  →  {"url": "...?guest=<만료>-<서명>"}
 # 링크의 서명은 MAINT_KEY에서 파생되므로 만료시각을 손으로 바꿔도 무효.
@@ -903,7 +911,9 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._send(200,json.dumps({"url":url,"hours":hours,
                 "expires_kst":time.strftime("%Y-%m-%d %H:%M",time.gmtime(exp+9*3600))},ensure_ascii=False))
         # 점검 중: /api/status 만 열어두고(서버가 잠들지 않게) 나머지는 안내 페이지
+        # (MAINT_BLANK=1 이면 안내 페이지 대신 빈 화면 — 로고·문구조차 안 보인다)
         if MAINTENANCE and path!="/api/status" and not self.maint_ok():
+            if MAINT_BLANK: return self._send(404,BLANK_HTML,"text/html","no-store")
             return self._send(503,MAINT_HTML,"text/html","no-store")
         if path=="/api/status":
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
