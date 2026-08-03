@@ -116,7 +116,8 @@ def parse_acc(acc):
         heroes[HEROES.get(hid,hid)]={"lv":hv.get("level"),"pt":round(hpt/3600,1) if isinstance(hpt,int) else None,
             "rt":hg(H_RT),"pre":hg(H_PRE),"sk":skin_name(hg(H_SKIN)),"pk":perk_list(hv)}
     regs=acc.get("regions") or []
-    return {"n":(acc.get("player_state") or {}).get("name",""),"r":regs[0] if regs else "",
+    # 이름은 정규화해서 담는다 — 게임서버가 주는 이름 끝 공백이 개명으로 잡히면 안 된다(nname 참고)
+    return {"n":nname((acc.get("player_state") or {}).get("name","")),"r":regs[0] if regs else "",
         "lv":g(C["level"]),"wr":round(wins/m*100,1) if (isinstance(wins,int) and isinstance(m,int) and m) else None,
         "mvp":g(C["mvp"]),"m":m,"w":wins,"kd":round(k/d,2) if (isinstance(k,int) and isinstance(d,int) and d) else None,
         "k":k,"d":d,"dmg":g(C["damage"]),"heal":g(C["heal"]),"db":g(C["double"]),"tr":g(C["triple"]),
@@ -139,6 +140,7 @@ def _env(*names):
 UPSTASH_URL=_env("UPSTASH_URL","UPSTASH_REDIS_REST_URL").rstrip("/")
 UPSTASH_TOKEN=_env("UPSTASH_TOKEN","UPSTASH_REDIS_REST_TOKEN")
 REDIS_STATE={"ok":None,"err":"미시도"}   # /api/status 로 연결 상태 확인용
+HIST_STATE={"n":0,"bytes":0}             # 실제 저장한 이력 수/크기 (1MB 한도 감시용)
 HIST_KEY="rsgg:namehist"
 SWEEP_SEC=int(os.environ.get("SWEEP_SEC","21600"))  # 전원 이름검사 주기(기본 6시간)
 def redis_cmd(*args):
@@ -155,6 +157,12 @@ def redis_cmd(*args):
         code=getattr(e,"code",None)
         REDIS_STATE.update(ok=False,err=f"{type(e).__name__}{'/'+str(code) if code else ''}")
         return None
+def nname(s):
+    """이름 정규화. 게임서버가 주는 이름은 뒤에 공백이 붙어 오는 경우가 있는데
+    ("GiGO.91 " vs "GiGO.91"), 그대로 비교하면 공백 하나 차이로 개명이 일어난 걸로
+    잡혀 옛 닉네임 목록이 유령 이름으로 더러워진다(수집본 8,180명 중 188명 해당)."""
+    return (s or "").strip()
+
 def hist_load():
     """파일(새로 수집한 기준선)과 Redis(누적된 개명 이력)를 **합친다.**
     ⚠️ 예전엔 Redis가 있으면 파일을 통째로 무시했다. 그래서 새로 수집한 유저가
@@ -166,10 +174,10 @@ def hist_load():
         print("이름이력 파일 로드 실패:",e)
     n_file=len(base)
     n_redis=0
-    raw=redis_cmd("GET",HIST_KEY)
+    raw=hist_unpack(redis_cmd("GET",HIST_KEY))
     if raw:
         try:
-            d=json.loads(raw); n_redis=len(d)
+            d=raw; n_redis=len(d)
             for pid,rec in d.items():
                 cur=base.get(pid)
                 if not cur:
@@ -179,31 +187,86 @@ def hist_load():
                 merged=list(cur.get("prev") or [])
                 for pn in (rec.get("prev") or []):
                     if pn and pn not in merged: merged.append(pn)
+                # ⚠️ 파일 cur을 쓰면 Redis의 cur이 그냥 증발한다. 재배포 직전에 개명한
+                #    유저가 그 이름으로 검색이 안 되던 원인. 다른 이름이면 옛 이름으로 남긴다
+                #    (다음 이름검사에서 실제 이름이 확인되면 cur/prev가 알아서 정리된다).
+                rcur=nname(rec.get("cur"))
+                if rcur and rcur!=nname(cur.get("cur")) and rcur not in merged: merged.append(rcur)
                 cur["prev"]=merged
                 if not cur.get("cur"): cur["cur"]=rec.get("cur")
         except Exception as e:
             print("이름이력 Redis 해석 실패:",e)
+    # 정규화 + "현재 이름이 옛 이름 목록에도 들어있는" 상태 청소
+    for pid,rec in base.items():
+        c=nname(rec.get("cur")); rec["cur"]=c
+        seen=set(); out=[]
+        for pn in (rec.get("prev") or []):
+            pn=nname(pn)
+            if pn and pn!=c and pn not in seen: seen.add(pn); out.append(pn)
+        rec["prev"]=out
     NAME_HIST.clear(); NAME_HIST.update(base)
-    print(f"이름이력 {len(NAME_HIST)}명 (파일 {n_file} + Redis {n_redis} 병합)")
+    keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
+    HIST_STATE.update(n=len(keep),bytes=len(hist_pack(keep).encode()))
+    print(f"이름이력 {len(NAME_HIST)}명 (파일 {n_file} + Redis {n_redis} 병합) · "
+          f"개명 {HIST_STATE['n']}명 / 저장 {HIST_STATE['bytes']}바이트")
+
+def hist_seed():
+    """players.json에는 있는데 이름이력에는 없는 유저를 채운다.
+    /api/search는 NAME_HIST만 순회하므로, 여기 없으면 **현재 닉네임으로도 검색이 안 된다.**
+    지금은 두 파일을 같이 수집해서 개수가 맞지만, 한쪽만 새로 올리면 바로 구멍이 난다."""
+    n=0
+    with LOCK:
+        for pid,p in CACHE["players"].items():
+            if pid in NAME_HIST: continue
+            NAME_HIST[pid]={"cur":nname(p.get("n")),"prev":[]}; n+=1
+    if n: print(f"이름이력 보충 {n}명 (players.json에만 있던 유저)")
+
+# Upstash REST는 요청 1건이 1MB 제한이다. 이름이력을 통째로 넣으면 8,180명에 597KB로
+# 이미 절반을 넘겼다(유저가 늘면 조용히 저장 실패 → 개명 이력이 안 쌓인다).
+# 그래서 ① 개명 이력이 **있는 유저만** 저장하고(현재 이름은 players.json에서 온다)
+#        ② 그래도 커지면 압축한다. 읽기는 옛 형식(생 JSON)도 그대로 받는다.
+HIST_ZPREFIX="z:"
+HIST_MAX=900_000
+def hist_pack(d):
+    blob=json.dumps(d,ensure_ascii=False,separators=(",",":"))
+    if len(blob.encode())>200_000: blob=HIST_ZPREFIX+_rk_pack(d)
+    return blob
+def hist_unpack(raw):
+    if not raw: return None
+    try:
+        if raw.startswith(HIST_ZPREFIX): return _rk_unpack(raw[len(HIST_ZPREFIX):])
+        return json.loads(raw)
+    except Exception as e:
+        print("이름이력 해석 실패:",e); return None
 def hist_save():
     if not (UPSTASH_URL and UPSTASH_TOKEN): return
     # ⚠️ 직렬화는 LOCK 안에서(그 사이 다른 스레드가 키를 넣으면 순회 중 예외),
     #    네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
-    with LOCK: blob=json.dumps(NAME_HIST,ensure_ascii=False)
+    with LOCK:
+        keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
+    blob=hist_pack(keep)
+    HIST_STATE.update(n=len(keep),bytes=len(blob.encode()))
+    if HIST_STATE["bytes"]>HIST_MAX:
+        print(f"[이름이력] {HIST_STATE['bytes']}바이트 — Upstash 1MB 한도에 근접, 저장 생략")
+        return
     if redis_cmd("SET",HIST_KEY,blob) is None:
         print("[이름이력] Upstash 저장 실패 — 이번 변경분이 저장되지 않았습니다")
 def hist_observe(pid,name):
     """이름 관측 → 개명 감지시 기록. 반환 (prev리스트, 변경여부)
     ⚠️ NAME_HIST는 /api/search가 순회하는 dict다. 여기서 락 없이 키를 추가하면
        검색 중이던 요청이 'dictionary changed size during iteration'으로 끊긴다."""
+    name=nname(name)
     with LOCK:
         if not name: return NAME_HIST.get(pid,{}).get("prev",[]), False
         rec=NAME_HIST.get(pid)
         if rec is None:
             NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
-        if rec.get("cur")!=name:
-            old=rec.get("cur")
+        if nname(rec.get("cur"))!=name:
+            old=nname(rec.get("cur"))
             if old and old not in rec["prev"]: rec["prev"].insert(0,old)
+            # 되찾은 이름은 옛 이름 목록에서 뺀다 — 안 그러면 현재 닉네임이
+            # 자기 프로필의 '이전 닉네임'에도 같이 뜬다.
+            rec["prev"]=[pn for pn in rec["prev"] if pn!=name]
             rec["cur"]=name; return list(rec["prev"]), True
         return list(rec.get("prev",[])), False
 
@@ -375,10 +438,14 @@ def load_disk():
     else:
         print("Upstash 미설정 — 닉네임 이력은 재배포시 초기화됩니다")
     hist_load()
+    hist_seed()
     rank_load()
     with LOCK:
         for pid,rec in NAME_HIST.items():
-            if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+            if pid in CACHE["players"]:
+                CACHE["players"][pid]["prev"]=rec.get("prev",[])
+                # 옛 수집본의 이름 끝 공백을 여기서 맞춰둔다(검색·표시 모두 이력 기준)
+                if rec.get("cur"): CACHE["players"][pid]["n"]=rec["cur"]
 
 def to_compact_from_raw(v):
     heroes={}
@@ -386,7 +453,7 @@ def to_compact_from_raw(v):
         heroes[hn]={"lv":hd.get("lv"),"pt":hd.get("pt"),"rt":hd.get("rt"),"pre":hd.get("pre"),"sk":hd.get("skin"),
             "pk":perk_sorted(int(x) for x in (hd.get("pk") or []))}
     reg=v.get("region","");  reg=REGION_REV.get(reg,reg)   # 옛 스냅샷은 한글로 저장돼 있음
-    return {"n":v.get("name",""),"r":reg,"lv":v.get("level"),"wr":v.get("winrate"),
+    return {"n":nname(v.get("name","")),"r":reg,"lv":v.get("level"),"wr":v.get("winrate"),
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
         "d":v.get("deaths"),"dmg":v.get("damage"),"heal":v.get("heal"),"db":v.get("double"),
         "tr":v.get("triple"),"fh":v.get("final"),"pt":v.get("playtime_h"),"pm":v.get("pro_matches"),
@@ -555,6 +622,7 @@ def sweep_names():
                         except: continue
                         pid=acc.get("player_id"); nm=(acc.get("player_state") or {}).get("name")
                         if pid and nm:
+                            nm=nname(nm)
                             _,ch=hist_observe(pid,nm)
                             if ch:
                                 changed+=1
@@ -706,25 +774,31 @@ class H(http.server.BaseHTTPRequestHandler):
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
                 "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
                 "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
-                "names":len(NAME_HIST),
+                "names":len(NAME_HIST),"renamed":HIST_STATE["n"],"hist_bytes":HIST_STATE["bytes"],
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
         if path=="/api/search":
             qs=urllib.parse.parse_qs(u.query); q=(qs.get("q",[""])[0] or "").strip().lower()
-            res=[]
+            # 현재 닉네임 매치와 옛 닉네임 매치를 따로 모은다.
+            # ⚠️ 예전엔 한 리스트에 담고 300개에서 끊었다. dict 순회 순서상 현재 닉네임
+            #    매치가 먼저 300개를 채우면 옛 닉네임으로 검색한 사람이 통째로 잘렸다.
+            hit_cur=[]; hit_prev=[]
             if q:
                 with LOCK:
                     for pid,rec in NAME_HIST.items():
                         cur=rec.get("cur") or ""; prevs=rec.get("prev",[])
-                        if q in cur.lower(): mp=None
-                        else:
-                            mp=next((pn for pn in prevs if pn and q in pn.lower()),None)
-                            if mp is None: continue
+                        # 옛 닉네임은 **전부** 훑어서 맞은 것을 모두 돌려준다(6번 바꿨으면 6개 다 대상)
+                        mp=[pn for pn in prevs if pn and q in pn.lower()]
+                        curhit=q in cur.lower()
+                        if not curhit and not mp: continue
                         p=CACHE["players"].get(pid,{})
-                        res.append({"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
-                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":mp,
-                            "rk":CACHE["player_ranks"].get(pid,{})})   # 랭킹은 별도 캐시에 있음
-                        if len(res)>=300: break
+                        it={"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
+                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":([] if curhit else mp),
+                            "rk":CACHE["player_ranks"].get(pid,{})}   # 랭킹은 별도 캐시에 있음
+                        (hit_cur if curhit else hit_prev).append(it)
+            LIMIT=300; PREV_MIN=100
+            keep=min(len(hit_prev),max(PREV_MIN,LIMIT-len(hit_cur)))
+            res=(hit_cur[:LIMIT-keep]+hit_prev[:keep])[:LIMIT]
             return self._send(200,json.dumps({"results":res}))
         if path.startswith("/api/detail/"):
             # 프로필 상세를 서버 메모리 캐시에서 즉시 준다(게임서버 접속 없음, 1KB대).
