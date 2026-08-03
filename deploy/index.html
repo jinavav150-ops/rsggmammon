@@ -11,8 +11,8 @@
 <meta property="og:site_name" content="RS.GG">
 <meta property="og:title" content="Ricochet Squad 전적검색 · RS.GG">
 <meta property="og:description" content="랭킹·티어·상성·특성 빌드·조합 승률을 한 곳에서. 닉네임으로 전적 검색.">
-<meta property="og:url" content="https://ricogg.onrender.com/">
-<meta property="og:image" content="https://ricogg.onrender.com/img/og.png">
+<meta property="og:url" content="__SITE_URL__/">
+<meta property="og:image" content="__SITE_URL__/img/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -178,7 +178,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .pkb img{width:100%;height:100%;object-fit:contain;pointer-events:none}
 .pkb:hover{filter:brightness(1.15) drop-shadow(0 0 4px rgba(255,255,255,.3))}
 .pkb:active{transform:scale(.93)}
-.pkb.sm{width:23px;height:23px}
+.pkb.sm{width:25px;height:25px}
 
 #perkTip{position:fixed;z-index:60;display:none;max-width:min(280px,88vw);background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:12.5px;line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.4)}
 /* 좁은 화면: 최근경기 덜 중요한 열 접기 */
@@ -321,7 +321,11 @@ function detectLang(){
 }
 const EMPTY={ui:{},heroes:{},maps:{},perks:{},regions:{},label:'',flag:''};
 let LANG=detectLang(), L=I18N[LANG]||I18N.en||EMPTY;
-function t(k,v){let s=(L.ui&&L.ui[k]!=null)?L.ui[k]:k; if(v)for(const n in v)s=s.split('{'+n+'}').join(v[n]); return s;}
+// ⚠️ 자리표시자는 **한 번에** 바꾼다. 순서대로 바꾸면 먼저 넣은 값 안의 {n}이 다시 치환된다.
+//    (검색어로 "{n}"을 넣으면 제목이 "'0' 검색결과"로 나오던 버그)
+function t(k,v){let s=(L.ui&&L.ui[k]!=null)?L.ui[k]:k;
+  if(v) s=String(s).replace(/\{(\w+)\}/g,(m,n)=>(n in v)?v[n]:m);
+  return s;}
 const mapName=id=>(L.maps&&L.maps[String(id)])||'';
 const perkName=id=>(L.perks&&L.perks[String(id)])||('#'+id);
 const regionName=c=>(L.regions&&L.regions[c])||c||'';
@@ -364,7 +368,7 @@ const ICON={
   refresh:'<svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v4h-4"/></svg>',
 };
 const hk=n=>(L.heroes&&L.heroes[n])||n;  // 캐릭명만 번역 (닉네임 등은 원본 유지)
-const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>(s||'').replace(/[&<>"'`]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;","`":"&#96;"}[c]));
 const wrClass=w=>w==null?'':(w>=50?'wrh':'wrl');
 function heroImg(n,cls){const f=String(n||'').toLowerCase();if(!f||f[0]==='#')return '';
   return `<img class="hi ${cls||''}" src="img/hero/${f}.png" alt="" loading="lazy" onerror="this.style.display='none'">`;}
@@ -737,7 +741,13 @@ function renderPlayer(id){
   }
   if(!p){
     if(window.LIVE){ app.innerHTML=`<div class="card"><div class="empty">${t('loading')}</div></div>`;
-      fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json()).then(j=>{ if(j.ok&&j.player){P[id]=j.player; if(location.hash==='#/player/'+id) renderPlayer(id);} else app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; }).catch(()=>{app.innerHTML=`<div class="card"><div class="empty">${t('load_error')}</div></div>`;});
+      // ⚠️ 성공/실패/오류 **모든** 경로에서 "아직 이 화면인가"를 확인한다.
+      //    확인 안 하면 늦게 온 응답이 사용자가 이동한 새 화면을 덮어쓴다.
+      const here=()=>location.hash==='#/player/'+id;
+      fetch('/api/player/'+encodeURIComponent(id)).then(r=>r.json())
+        .then(j=>{ if(j.ok&&j.player){ P[id]=j.player; if(here()) renderPlayer(id); }
+                   else if(here()) app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; })
+        .catch(()=>{ if(here()) app.innerHTML=`<div class="card"><div class="empty">${t('load_error')}</div></div>`; });
       return;
     }
     app.innerHTML=`<div class="card"><div class="empty">${t('no_user')}</div></div>`; return;
@@ -857,7 +867,7 @@ function matchesHtml(matches){
     const side=arr=>arr.map(x=>`<div class="sbl${x.me?' me':''}"><span class="sbn">${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)}</span>${x.mv?'<span class="sbmvp">MVP</span>':''}<span class="sbk">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
     const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
-    h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="8">
+    h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="7">
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
         <div class="sbteam ally"><div class="sbhead"><span class="muted">${t('our_team')} · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
         <div class="sbteam foe"><div class="sbhead"><span class="muted">${t('enemy_team')} · </span><b>${m.ens}</b></div>${side(t2)}</div>
@@ -890,9 +900,13 @@ function clientSearch(q){
 function renderSearch(q){
   if(window.LIVE){   // 서버 실시간 검색 (개명 즉시 반영, 현재 닉네임으로 표시)
     app.innerHTML=`<a class="back" onclick="goBoard('pro')">← ${t('to_ranking')}</a><div class="sect-t">${t('searching')}</div>`;
+    // ⚠️ 검색 응답은 1초 안팎 걸린다. 그 사이 로고를 누르면 화면이 바뀌는데,
+    //    가드가 없으면 뒤늦게 도착한 검색 결과가 그 화면을 덮어쓴다(실제 발생했던 증상).
+    // 가드: "아직 이 검색 화면인가". 해시 인코딩 형태가 달라질 수 있으니 디코딩해서 검색어로 비교한다.
+    const onSearch=()=>{const h=decodeHash(); return h.startsWith('#/search/')&&h.slice(9).trim()===q;};
     fetch('/api/search?q='+encodeURIComponent(q)).then(r=>r.json())
-      .then(j=>renderSearchResults(q,(j.results||[]).map(r=>({id:r.id,n:r.n,r:r.r,wr:r.wr,lv:r.lv,prevMatch:r.pm,rk:r.rk}))))
-      .catch(()=>renderSearchResults(q,clientSearch(q)));
+      .then(j=>{ if(onSearch()) renderSearchResults(q,(j.results||[]).map(r=>({id:r.id,n:r.n,r:r.r,wr:r.wr,lv:r.lv,prevMatch:r.pm,rk:r.rk}))); })
+      .catch(()=>{ if(onSearch()) renderSearchResults(q,clientSearch(q)); });
     return;
   }
   renderSearchResults(q,clientSearch(q));
@@ -903,6 +917,8 @@ function renderSearch(q){
 //    이미 바뀐 뒤라, 화면만 옛 상태로 남아 어긋난다.
 //    (재현: 필터 "ki" 입력 → 이미 켜진 탭을 다시 클릭 → 지역 선택 → 입력창엔 ki가 남았는데 목록은 전체)
 //    그래서 해시가 같으면 render()를 직접 부른다.
+// 해시를 안전하게 디코딩(잘린 %가 있어도 던지지 않는다). 화면 비교용.
+function decodeHash(){ try{ return decodeURIComponent(location.hash||''); }catch(e){ return location.hash||''; } }
 function goHash(h){ if(location.hash===h) render(); else location.hash=h; }
 // 로고/첫 진입은 '프로'로 고정돼 있었는데, 시즌 초엔 프로 보드가 없어서
 // 주소는 #/board/pro인데 화면은 캐주얼이 뜨는 불일치가 났다. 있는 보드로 보낸다.
@@ -919,7 +935,7 @@ function render(){
   let h=location.hash||'';
   try{ h=decodeURIComponent(h); }catch(e){}
   if(h.startsWith('#/player/')) return renderPlayer(h.slice(9));
-  if(h.startsWith('#/search/')) return renderSearch(h.slice(9));
+  if(h.startsWith('#/search/')) return renderSearch(h.slice(9).trim());   // 주소로 들어온 검색어도 공백 정리
   if(h.startsWith('#/board/')){curBoard=h.slice(8)||'pro';}
   syncSeasonSel();
   if(curBoard==='tiers') return renderTiers();

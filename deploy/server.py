@@ -20,6 +20,15 @@ WEB_PORT=int(os.environ.get("PORT","8000"))
 HERE=os.path.dirname(os.path.abspath(__file__))
 DATA=os.path.join(HERE,"data")
 VALID_PID=re.compile(r"^[0-9a-fA-F-]{8,40}$")   # 게임 player_id(UUID) 형식만 통과
+# ── 점검(공개 중지) 모드 ─────────────────────────────
+# MAINTENANCE=1 이면 방문자에게 "준비 중" 안내만 보여준다.
+# ⚠️ 데이터 수집은 그대로 돈다(리더보드 30분 · 이름검사 6시간 · 랭킹 스냅샷 매일).
+# ⚠️ /api/status 는 점검 중에도 열어둔다 — UptimeRobot이 서버를 깨워야 스냅샷이 계속 쌓인다.
+#    막아버리면 무료 서버가 잠들어 그날치 랭킹 기록이 통째로 비는 사고가 난다.
+# 본인 확인용: 주소 뒤에 ?preview=<MAINTENANCE_KEY> 를 붙이면 쿠키가 심겨 정상 화면이 보인다.
+def _on(v): return str(v).strip().lower() not in ("","0","false","no","off")
+MAINTENANCE=_on(os.environ.get("MAINTENANCE",""))
+MAINT_KEY=os.environ.get("MAINTENANCE_KEY","").strip()
 HEROES={"108140568":"Dread","80931949":"Khan","61223451":"Vector","631049":"Oni","631047":"Remedy",
 "97251807":"Sejin","631045":"Twinkle","631042":"Jagger","631040":"Calibri","631036":"Leo",
 "45850136":"Magnus","65893852":"Nova","91887043":"Fury"}
@@ -636,17 +645,63 @@ def live_player(pid):
     finally:
         s.close()
 
+MAINT_HTML="""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>RS.GG — 준비 중</title>
+<style>
+:root{--bg:#0e1015;--panel:#171a21;--line:#2a2f3d;--tx:#e8eaf0;--mut:#9aa3b2;--acc:#4a86ff}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;padding:24px}
+.box{max-width:460px;text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:40px 28px}
+.logo{font-size:34px;font-weight:800;letter-spacing:-1px;margin-bottom:6px}
+.logo span{color:var(--acc)}
+h1{font-size:19px;margin:18px 0 10px}
+p{color:var(--mut);font-size:14px;line-height:1.7;margin:8px 0}
+.en{font-size:12.5px;color:#6d7688;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+</style></head><body><div class="box">
+<div class="logo">RS<span>.GG</span></div>
+<h1>지금은 이용할 수 없습니다</h1>
+<p>운영 방침 협의가 끝날 때까지<br>사이트를 잠시 닫아두었습니다.</p>
+<p>그동안에도 랭킹 기록은 계속 쌓이고 있으니,<br>다시 열릴 때 이 기간의 데이터도 함께 보실 수 있습니다.</p>
+<div class="en">Temporarily closed while we finalize operating policy.<br>Data collection continues in the background.</div>
+</div></body></html>"""
+
 # ── 웹서버 ───────────────────────────────────────────
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
-    def _send(self,code,body,ctype="application/json",cache=None):
+    def _send(self,code,body,ctype="application/json",cache=None,extra=None):
         self.send_response(code); self.send_header("Content-Type",ctype)
         self.send_header("Access-Control-Allow-Origin","*")
+        for k,v in (extra or []): self.send_header(k,v)
         if cache: self.send_header("Cache-Control",cache)
         self.end_headers()
+        if getattr(self,"_head_only",False): return      # HEAD는 헤더까지만
         self.wfile.write(body if isinstance(body,bytes) else body.encode("utf-8"))
+    def do_HEAD(self):
+        """일부 링크 미리보기 크롤러·모니터링이 HEAD로 먼저 찔러본다.
+        구현이 없으면 501이 떠서 '죽은 사이트'로 오해받는다. 본문 없이 헤더만 돌려준다."""
+        self._head_only=True
+        try: self.do_GET()
+        finally: self._head_only=False
+    def maint_ok(self):
+        """점검 모드를 통과할 수 있는가 (관리자 미리보기 쿠키 보유)."""
+        if not MAINT_KEY: return False
+        ck=self.headers.get("Cookie") or ""
+        return ("rsgg_preview="+MAINT_KEY) in ck
+
     def do_GET(self):
         u=urllib.parse.urlparse(self.path); path=u.path
+        qs=urllib.parse.parse_qs(u.query)
+        # 관리자 미리보기 진입: ?preview=<키> → 쿠키를 심고 원래 주소로 보낸다
+        if MAINT_KEY and (qs.get("preview",[""])[0]==MAINT_KEY):
+            self.send_response(302)
+            self.send_header("Set-Cookie","rsgg_preview="+MAINT_KEY+"; Path=/; Max-Age=86400; SameSite=Lax")
+            self.send_header("Location",path or "/"); self.end_headers(); return
+        # 점검 중: /api/status 만 열어두고(서버가 잠들지 않게) 나머지는 안내 페이지
+        if MAINTENANCE and path!="/api/status" and not self.maint_ok():
+            return self._send(503,MAINT_HTML,"text/html","no-store")
         if path=="/api/status":
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
                 "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
@@ -716,6 +771,12 @@ class H(http.server.BaseHTTPRequestHandler):
         # html/js는 항상 새로 받게(수정 후 옛 화면 방지), 이미지는 오래 캐시
         cache="public, max-age=604800" if fn.startswith("img/") else "no-cache"
         with open(fp,"rb") as f: data=f.read()
+        if fn=="index.html":
+            # OG 태그의 주소를 실제 접속 주소로 맞춘다.
+            # ⚠️ 주소를 코드에 박으면 서비스 이름을 바꿀 때마다 공유 카드가 깨진다.
+            host=self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+            proto=self.headers.get("X-Forwarded-Proto") or ("https" if ":443" in host else "http")
+            if host: data=data.replace(b"__SITE_URL__",(proto+"://"+host.split(",")[0].strip()).encode())
         return self._send(200,data,ct,cache)
 
 def main():
