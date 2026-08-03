@@ -883,8 +883,6 @@ const pmList=it=>Array.isArray(it.prevMatch)?it.prevMatch.filter(Boolean):(it.pr
 function searchRow(it){
   let best='',bestRank=1e9; const rk=(it.rk&&it.rk[curSeason])||{};
   for(const lab in rk){if(rk[lab][0]<bestRank){bestRank=rk[lab][0];best=boardLabel(lab)+' '+t('rank_suffix',{r:rk[lab][0]});}}
-  // 옛 닉네임 매치는 여러 개일 수 있다(6번 바꿨으면 6개 다 검색 대상).
-  // 서버는 배열, 옛 응답·클라 폴백은 문자열이라 양쪽 다 받는다.
   const pm=pmList(it);
   const prevTag=pm.length?`<div class="muted" style="font-size:11px">↳ ${t('old_nick')} <b>${pm.map(esc).join('</b>, <b>')}</b> → ${t('now_nick')} <b>${esc(it.n)}</b></div>`:'';
   return `<tr onclick="goPlayer('${it.id}')"><td><span class="name">${esc(it.n)}</span>${prevTag}</td><td class="muted">${esc(regionName(it.r))}</td>`

@@ -240,10 +240,12 @@ def hist_unpack(raw):
         print("이름이력 해석 실패:",e); return None
 def hist_save():
     if not (UPSTASH_URL and UPSTASH_TOKEN): return
-    # ⚠️ 직렬화는 LOCK 안에서(그 사이 다른 스레드가 키를 넣으면 순회 중 예외),
-    #    네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
+    # ⚠️ 복사는 LOCK 안에서 **깊게**(rec는 NAME_HIST와 같은 객체라 얕은 복사만 하면
+    #    LOCK 밖 직렬화 중에 다른 스레드가 rec를 고쳐 순회 중 예외가 난다),
+    #    직렬화·네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
     with LOCK:
-        keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
+        keep={pid:{"cur":rec.get("cur"),"prev":list(rec.get("prev") or [])}
+              for pid,rec in NAME_HIST.items() if rec.get("prev")}
     blob=hist_pack(keep)
     HIST_STATE.update(n=len(keep),bytes=len(blob.encode()))
     if HIST_STATE["bytes"]>HIST_MAX:
@@ -263,11 +265,16 @@ def hist_observe(pid,name):
             NAME_HIST[pid]={"cur":name,"prev":[]}; return [], False
         if nname(rec.get("cur"))!=name:
             old=nname(rec.get("cur"))
-            if old and old not in rec["prev"]: rec["prev"].insert(0,old)
+            # ⚠️ 기존 리스트를 제자리에서 insert하면 안 된다. 이 리스트는
+            #    CACHE["players"]·site_data 빌드·/api 응답이 같은 객체를 참조하는데,
+            #    그쪽 json.dumps는 LOCK 밖에서 돈다. **새 리스트를 만들어 재할당**하면
+            #    이미 참조 중인 쪽은 옛 리스트를 끝까지 안전하게 읽는다.
             # 되찾은 이름은 옛 이름 목록에서 뺀다 — 안 그러면 현재 닉네임이
             # 자기 프로필의 '이전 닉네임'에도 같이 뜬다.
-            rec["prev"]=[pn for pn in rec["prev"] if pn!=name]
-            rec["cur"]=name; return list(rec["prev"]), True
+            prev=[pn for pn in rec.get("prev",[]) if pn!=name]
+            if old and old not in prev: prev.insert(0,old)
+            rec["prev"]=prev; rec["cur"]=name
+            return list(prev), True
         return list(rec.get("prev",[])), False
 
 # ── 랭킹 변동 추적 (일별 스냅샷) ──────────────────────────────────
@@ -782,21 +789,26 @@ class H(http.server.BaseHTTPRequestHandler):
             # 현재 닉네임 매치와 옛 닉네임 매치를 따로 모은다.
             # ⚠️ 예전엔 한 리스트에 담고 300개에서 끊었다. dict 순회 순서상 현재 닉네임
             #    매치가 먼저 300개를 채우면 옛 닉네임으로 검색한 사람이 통째로 잘렸다.
+            LIMIT=300; PREV_MIN=100
             hit_cur=[]; hit_prev=[]
             if q:
                 with LOCK:
                     for pid,rec in NAME_HIST.items():
+                        # 양쪽 다 300이면 그만 — 어차피 아래에서 300으로 자르므로 결과는 같고,
+                        # 한 글자 검색어로 수천 건이 걸릴 때 LOCK을 쥔 시간만 줄어든다
+                        if len(hit_cur)>=LIMIT and len(hit_prev)>=LIMIT: break
                         cur=rec.get("cur") or ""; prevs=rec.get("prev",[])
                         # 옛 닉네임은 **전부** 훑어서 맞은 것을 모두 돌려준다(6번 바꿨으면 6개 다 대상)
                         mp=[pn for pn in prevs if pn and q in pn.lower()]
                         curhit=q in cur.lower()
                         if not curhit and not mp: continue
+                        dst=hit_cur if curhit else hit_prev
+                        if len(dst)>=LIMIT: continue
                         p=CACHE["players"].get(pid,{})
-                        it={"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
-                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":prevs,"pm":([] if curhit else mp),
-                            "rk":CACHE["player_ranks"].get(pid,{})}   # 랭킹은 별도 캐시에 있음
-                        (hit_cur if curhit else hit_prev).append(it)
-            LIMIT=300; PREV_MIN=100
+                        dst.append({"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
+                            "wr":p.get("wr"),"lv":p.get("lv"),"prev":list(prevs),"pm":([] if curhit else mp),
+                            "rk":CACHE["player_ranks"].get(pid,{})})   # 랭킹은 별도 캐시에 있음
+            # 현재 닉네임 매치가 300을 다 채워도 옛 닉네임 몫 100은 보장한다
             keep=min(len(hit_prev),max(PREV_MIN,LIMIT-len(hit_cur)))
             res=(hit_cur[:LIMIT-keep]+hit_prev[:keep])[:LIMIT]
             return self._send(200,json.dumps({"results":res}))
