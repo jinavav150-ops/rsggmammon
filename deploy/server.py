@@ -6,7 +6,7 @@
 - /api/player/<id> : 그 유저를 게임서버에서 실시간 조회
 실행:  python3 server.py   →  브라우저에서 http://localhost:8000
 """
-import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64, gzip, re
+import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64, gzip, re, hashlib, hmac
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
@@ -29,6 +29,19 @@ VALID_PID=re.compile(r"^[0-9a-fA-F-]{8,40}$")   # 게임 player_id(UUID) 형식�
 def _on(v): return str(v).strip().lower() not in ("","0","false","no","off")
 MAINTENANCE=_on(os.environ.get("MAINTENANCE",""))
 MAINT_KEY=os.environ.get("MAINTENANCE_KEY","").strip()
+# ── 게스트 초대 (점검 중에 특정인에게 시간제한 열람 허용) ──
+# 발급: /api/guest?key=<MAINTENANCE_KEY>&hours=2  →  {"url": "...?guest=<만료>-<서명>"}
+# 링크의 서명은 MAINT_KEY에서 파생되므로 만료시각을 손으로 바꿔도 무효.
+# 만료가 지나면 링크를 다시 눌러도, 쿠키가 남아 있어도 서버가 거부한다 → 자동 차단.
+def guest_sig(exp):
+    return hashlib.sha256(f"rsgg-guest:{exp}:{MAINT_KEY}".encode()).hexdigest()[:20]
+def guest_ok(tok):
+    """'<만료유닉스초>-<서명>' 토큰 검증."""
+    if not (MAINT_KEY and tok): return False
+    m=re.match(r"^(\d{1,12})-([0-9a-f]{20})$",tok or "")
+    if not m: return False
+    exp=int(m.group(1))
+    return time.time()<exp and hmac.compare_digest(m.group(2),guest_sig(exp))
 HEROES={"108140568":"Dread","80931949":"Khan","61223451":"Vector","631049":"Oni","631047":"Remedy",
 "97251807":"Sejin","631045":"Twinkle","631042":"Jagger","631040":"Calibri","631036":"Leo",
 "45850136":"Magnus","65893852":"Nova","91887043":"Fury"}
@@ -142,7 +155,11 @@ UPSTASH_TOKEN=_env("UPSTASH_TOKEN","UPSTASH_REDIS_REST_TOKEN")
 REDIS_STATE={"ok":None,"err":"미시도"}   # /api/status 로 연결 상태 확인용
 HIST_STATE={"n":0,"bytes":0}             # 실제 저장한 이력 수/크기 (1MB 한도 감시용)
 HIST_KEY="rsgg:namehist"
-SWEEP_SEC=int(os.environ.get("SWEEP_SEC","21600"))  # 전원 이름검사 주기(기본 6시간)
+SWEEP_SEC=int(os.environ.get("SWEEP_SEC","7200"))   # 전원 이름검사 주기(기본 2시간)
+# 스윕 1회당 이름을 수확할 경기 수 상한. 첫 스윕은 전원의 최근 경기가 전부 '처음 보는
+# 경기'라 수만 건일 수 있다 → 상한을 걸고 나머지는 다음 스윕에 이어서 한다.
+SWEEP_MATCH_MAX=int(os.environ.get("SWEEP_MATCH_MAX","15000"))
+SEEN_MATCH=set()   # 이름 수확을 마친 경기 id (메모리 — 재시작하면 한 번 다시 훑지만, 수확은 멱등이라 무해)
 def redis_cmd(*args):
     if not UPSTASH_URL or not UPSTASH_TOKEN:
         REDIS_STATE.update(ok=False,err="환경변수 없음"); return None
@@ -648,11 +665,45 @@ def scheduler():
         try: refresh_leaderboards()
         except Exception as e: print("[갱신] 오류:",e)
 
+def harvest_match_ids(s, mids):
+    """경기 id 목록 중 아직 안 본 경기의 결과를 받아 6인 전원의 '당시 이름'을 수확.
+    반환 (수확 건수, 소켓) — 재접속했을 수 있어 소켓을 돌려준다.
+    스윕이 이름을 못 본 사이(2시간)에 스쳐간 닉네임도 경기 기록에는 남는다.
+    프로필 열람 수확(harvest_match_names)과 달리 **전원**을 커버한다."""
+    todo=[m for m in mids if m not in SEEN_MATCH]
+    skipped=len(todo)-SWEEP_MATCH_MAX
+    if skipped>0:
+        todo=todo[:SWEEP_MATCH_MAX]
+        print(f"[이름검사] 새 경기 {len(todo)+skipped}건 중 {len(todo)}건만 이번에 수확 (나머지는 다음 스윕)")
+    noted=0; rid=9000; j=0
+    while j<len(todo):
+        batch=todo[j:j+30]; rid+=1
+        try:
+            s.sendall(fr({"request_id":rid,"type":"get_match_results_info"},{"match_ids":batch}))
+            for _ in range(40):
+                env,body=rd(s)
+                if env.get("type")=="get_match_results_info" and "match_result_info_jsons" in body:
+                    for js in body["match_result_info_jsons"]:
+                        try: m=json.loads(js)
+                        except: continue
+                        for p in m.get("PlayerResults",[]):
+                            if p.get("PlayerId") and p.get("Name") and hist_note_past(p["PlayerId"],p["Name"]): noted+=1
+                    break
+            # 응답에 없는 경기(만료 등)도 본 것으로 친다 — 안 그러면 매 스윕 헛되이 재요청한다
+            SEEN_MATCH.update(batch); j+=30
+        except (ConnectionError, socket.timeout, OSError):
+            try: s.close()
+            except: pass
+            time.sleep(1); s=connect(); continue
+        time.sleep(0.1)
+    return noted, s
+
 def sweep_names():
     ids=list(CACHE["players"].keys())
     if not ids: return
     print(f"[이름검사] {len(ids)}명 이름 수집...")
     s=connect(); rid=8000; changed=0; i=0
+    mseen=set(); match_ids=[]   # 이번 스윕에서 모은 경기 id (rich_info 응답에 이미 있어 추가 요청 없음)
     while i<len(ids):
         batch=ids[i:i+60]; rid+=1
         try:
@@ -670,6 +721,8 @@ def sweep_names():
                             if ch:
                                 changed+=1
                                 if pid in CACHE["players"]: CACHE["players"][pid]["n"]=nm
+                        for mid in ((acc.get("match_state") or {}).get("match_history") or []):
+                            if mid not in mseen: mseen.add(mid); match_ids.append(mid)
                     break
             i+=60
         except (ConnectionError, socket.timeout, OSError):
@@ -677,12 +730,17 @@ def sweep_names():
             except: pass
             time.sleep(1); s=connect(); continue
         time.sleep(0.1)
+    noted=0
+    try:
+        noted,s=harvest_match_ids(s, match_ids)
+    except Exception as e:
+        print("[이름검사] 경기 수확 오류:",e)
     s.close()
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
     hist_save(); build_site_data()
-    print(f"[이름검사] 완료 · 개명 {changed}건")
+    print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건")
 def sweep_scheduler():
     while True:
         time.sleep(SWEEP_SEC)
@@ -800,10 +858,12 @@ class H(http.server.BaseHTTPRequestHandler):
         try: self.do_GET()
         finally: self._head_only=False
     def maint_ok(self):
-        """점검 모드를 통과할 수 있는가 (관리자 미리보기 쿠키 보유)."""
+        """점검 모드를 통과할 수 있는가 (관리자 미리보기 또는 유효한 게스트 쿠키)."""
         if not MAINT_KEY: return False
         ck=self.headers.get("Cookie") or ""
-        return ("rsgg_preview="+MAINT_KEY) in ck
+        if ("rsgg_preview="+MAINT_KEY) in ck: return True
+        m=re.search(r"rsgg_guest=(\d{1,12}-[0-9a-f]{20})",ck)
+        return bool(m and guest_ok(m.group(1)))   # 매 요청 재검증 — 만료 순간 자동 차단
 
     def do_GET(self):
         u=urllib.parse.urlparse(self.path); path=u.path
@@ -813,6 +873,25 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Set-Cookie","rsgg_preview="+MAINT_KEY+"; Path=/; Max-Age=5184000; SameSite=Lax")  # 60일
             self.send_header("Location",path or "/"); self.end_headers(); return
+        # 게스트 초대 진입: ?guest=<만료-서명> → 유효할 때만 쿠키를 심는다
+        g=qs.get("guest",[""])[0]
+        if g and guest_ok(g):
+            exp=int(g.split("-")[0])
+            self.send_response(302)
+            self.send_header("Set-Cookie",f"rsgg_guest={g}; Path=/; Max-Age={max(1,exp-int(time.time()))}; SameSite=Lax")
+            self.send_header("Location",path or "/"); self.end_headers(); return
+        # 게스트 링크 발급 (관리자 전용 — 키가 틀리면 존재 자체를 숨긴다)
+        if path=="/api/guest":
+            if not (MAINT_KEY and qs.get("key",[""])[0]==MAINT_KEY):
+                return self._send(404,"not found","text/plain")
+            try: hours=min(168.0,max(0.05,float(qs.get("hours",["2"])[0])))
+            except ValueError: hours=2.0
+            exp=int(time.time()+hours*3600)
+            host=self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+            proto=self.headers.get("X-Forwarded-Proto") or ("https" if ":443" in host else "http")
+            url=f"{proto}://{host.split(',')[0].strip()}/?guest={exp}-{guest_sig(exp)}"
+            return self._send(200,json.dumps({"url":url,"hours":hours,
+                "expires_kst":time.strftime("%Y-%m-%d %H:%M",time.gmtime(exp+9*3600))},ensure_ascii=False))
         # 점검 중: /api/status 만 열어두고(서버가 잠들지 않게) 나머지는 안내 페이지
         if MAINTENANCE and path!="/api/status" and not self.maint_ok():
             return self._send(503,MAINT_HTML,"text/html","no-store")
