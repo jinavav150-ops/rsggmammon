@@ -167,6 +167,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .sbl{display:flex;align-items:center;gap:8px;min-width:0}
 .sbl .sbn{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sbl .sbmvp{flex:0 0 auto;font-size:9.5px;font-weight:800;color:#1a1a1a;background:var(--gold);border-radius:4px;padding:1px 4px;letter-spacing:.3px}
+.sbl .sbparty{flex:0 0 auto;font-size:9px;font-weight:700;color:var(--acc2);border:1px solid var(--acc);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:1px}
+.sbl .sbbot{flex:0 0 auto;font-size:9px;font-weight:700;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:1px}
 .sbl .sbk{flex:0 0 auto;color:var(--mut);font-size:11.5px;font-variant-numeric:tabular-nums}
 .sbl.me{font-weight:800;color:var(--acc2)}
 .sbl.me .sbk{color:var(--acc2)}
@@ -864,10 +866,22 @@ function matchesHtml(matches){
       const gs=(x.hp&&x.hp.length)?x.hp:[]; const st=statsOf(x);
       if(!gs.length) return st?`<div class="sbp">${st}</div>`:'';
       return gs.map((g,gi)=>`<div class="sbp">${gs.length>1?`<span class="hh">${esc(hk(g.h))}</span>`:''}${perkChips(g.pk,1)}${gi===0?st:''}</div>`).join('');};
-    const side=arr=>arr.map(x=>`<div class="sbl${x.me?' me':''}"><span class="sbn">${heroImg(x.h)}${esc(hk(x.h))} · ${x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n)}</span>${x.mv?'<span class="sbmvp">MVP</span>':''}<span class="sbk">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`).join('');
+    const side=arr=>{
+      // 파티 판별: 같은 팀에서 같은 sq 값이 2명 이상이면 같이 큐 돌린 것 (서버가 SquadId에서 추출)
+      const cnt={}; arr.forEach(x=>{if(x.sq)cnt[x.sq]=(cnt[x.sq]||0)+1;});
+      const parties=Object.keys(cnt).filter(k=>cnt[k]>=2);
+      return arr.map(x=>{
+        const tag=x.bot?`<span class="sbbot">${t('bot')}</span>`
+          :(x.sq&&parties.includes(x.sq))?`<span class="sbparty">${t('party')}${parties.length>1?parties.indexOf(x.sq)+1:''}</span>`:'';
+        const nm=x.bot?`<span class="muted">${esc(x.n)}</span>`   // 봇은 프로필이 없다 — 링크 없이 흐리게
+          :(x.id?`<span class="plink" onclick="event.stopPropagation();goPlayer('${x.id}')">${esc(x.n)}</span>`:esc(x.n));
+        return `<div class="sbl${x.me?' me':''}"><span class="sbn">${heroImg(x.h)}${esc(hk(x.h))} · ${nm}${tag}</span>${x.mv?'<span class="sbmvp">MVP</span>':''}<span class="sbk">${x.k??0}/${x.d??0}</span></div>${perksOf(x)}`;
+      }).join('');
+    };
     const meP=m.players.find(x=>x.me); const myTeam=meP?meP.tm:1;
     const t1=m.players.filter(x=>x.tm===myTeam),t2=m.players.filter(x=>x.tm!==myTeam);
     h+=`<tr class="mdet" id="md${i}" style="display:none"><td colspan="7">
+      ${m.avg?`<div class="muted" style="font-size:11px;padding:4px 2px 0">${t('avg_rt')} <b style="color:var(--tx)">${num(m.avg)}</b></div>`:''}
       <div style="display:flex;gap:24px;flex-wrap:wrap;padding:4px 2px;font-size:12px">
         <div class="sbteam ally"><div class="sbhead"><span class="muted">${t('our_team')} · </span><b style="color:${m.win?'var(--win)':'var(--lose)'}">${m.mys}</b></div>${side(t1)}</div>
         <div class="sbteam foe"><div class="sbhead"><span class="muted">${t('enemy_team')} · </span><b>${m.ens}</b></div>${side(t2)}</div>

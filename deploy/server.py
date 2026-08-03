@@ -769,7 +769,17 @@ def parse_matches(jsons, pid):
                   "dmg":p.get("Damage"),   # 그 경기 그 선수의 딜량 (게임 결과창에도 나오는 값)
                   "mv":p.get("PlayerId")==m.get("MVPId"),"me":p.get("PlayerId")==pid,"hp":match_perks(p)}
                  for p in prs]
+        for q,p in zip(players,prs):
+            # 파티/봇 구분 (2026-08-03 덤프로 확인한 SquadId 의미):
+            #   빈 값 = 솔로 · 'N_M' = 파티 식별자(같은 팀에서 같은 값 = 같이 큐) · bot_squad_* = 봇
+            # 봇은 BotArchetype(봇 성격 id)이 비어있지 않은 것으로 판별하는 게 더 확실하다.
+            if p.get("BotArchetype"): q["bot"]=1
+            else:
+                sq=p.get("SquadId") or ""
+                if re.match(r"^\d+_\d+$",sq): q["sq"]=sq
+        avg=m.get("AvgTeamRating")   # 매치 전체 평균 레이팅 ("이 판의 수준")
         out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
+            "avg":(round(avg) if isinstance(avg,(int,float)) else None),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
             "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":str(m.get("LevelId") or ""),"dmg":me.get("Damage"),"players":players})
     out.sort(key=lambda x:-(x["ts"] or 0))
