@@ -697,7 +697,7 @@ class H(http.server.BaseHTTPRequestHandler):
         # 관리자 미리보기 진입: ?preview=<키> → 쿠키를 심고 원래 주소로 보낸다
         if MAINT_KEY and (qs.get("preview",[""])[0]==MAINT_KEY):
             self.send_response(302)
-            self.send_header("Set-Cookie","rsgg_preview="+MAINT_KEY+"; Path=/; Max-Age=86400; SameSite=Lax")
+            self.send_header("Set-Cookie","rsgg_preview="+MAINT_KEY+"; Path=/; Max-Age=5184000; SameSite=Lax")  # 60일
             self.send_header("Location",path or "/"); self.end_headers(); return
         # 점검 중: /api/status 만 열어두고(서버가 잠들지 않게) 나머지는 안내 페이지
         if MAINTENANCE and path!="/api/status" and not self.maint_ok():
