@@ -269,8 +269,12 @@ def hist_save():
     #    LOCK 밖 직렬화 중에 다른 스레드가 rec를 고쳐 순회 중 예외가 난다),
     #    직렬화·네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
     with LOCK:
-        keep={pid:{"cur":rec.get("cur"),"prev":list(rec.get("prev") or [])}
-              for pid,rec in NAME_HIST.items() if rec.get("prev")}
+        # ⚠️ 필드를 골라 담지 말 것 — ts처럼 나중에 추가한 값이 조용히 사라진다.
+        #    dict(rec)로 통째 복사하고 리스트만 새로 만든다(그래야 LOCK 밖에서 안전).
+        keep={}
+        for pid,rec in NAME_HIST.items():
+            if not rec.get("prev"): continue
+            q=dict(rec); q["prev"]=list(rec["prev"]); keep[pid]=q
     blob=hist_pack(keep)
     HIST_STATE.update(n=len(keep),bytes=len(blob.encode()))
     if HIST_STATE["bytes"]>HIST_MAX:
@@ -300,6 +304,7 @@ def hist_observe(pid,name):
             prev=[pn for pn in rec.get("prev",[]) if pn!=name]
             if old and old not in prev: prev.insert(0,old)
             rec["prev"]=prev; rec["cur"]=name
+            rec["ts"]=int(time.time())   # 관측 시각(= 개명을 확인한 때). 관리자 목록 정렬·표시용
             return list(prev), True
         return list(rec.get("prev",[])), False
 
@@ -875,6 +880,13 @@ class H(http.server.BaseHTTPRequestHandler):
         self._head_only=True
         try: self.do_GET()
         finally: self._head_only=False
+    def admin_ok(self):
+        """관리자 본인인가. **게스트 초대는 여기서 통과 못 한다**(관리자 쿠키만 인정).
+        관리자 전용 화면·데이터의 유일한 관문."""
+        if not MAINT_KEY: return False
+        ck=self.headers.get("Cookie") or ""
+        return ("rsgg_preview="+MAINT_KEY) in ck
+
     def maint_ok(self):
         """점검 모드를 통과할 수 있는가 (관리자 미리보기 또는 유효한 게스트 쿠키)."""
         if not MAINT_KEY: return False
@@ -922,6 +934,24 @@ class H(http.server.BaseHTTPRequestHandler):
                 "names":len(NAME_HIST),"renamed":HIST_STATE["n"],"hist_bytes":HIST_STATE["bytes"],
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
+        if path=="/api/renamed":
+            # 관리자 전용 — 개명한 유저 전체 목록.
+            # ⚠️ 권한 없으면 403이 아니라 **404**를 준다. 있다는 사실 자체를 숨기려는 것
+            #    (403이면 "여기 뭔가 있다"는 신호가 된다).
+            if not self.admin_ok(): return self._send(404,"not found","text/plain")
+            out=[]
+            with LOCK:
+                for pid,rec in NAME_HIST.items():
+                    prev=rec.get("prev")
+                    if not prev: continue
+                    p=CACHE["players"].get(pid,{})
+                    out.append({"id":pid,"n":rec.get("cur") or p.get("n",""),"prev":list(prev),
+                                "r":p.get("r",""),"lv":p.get("lv"),"wr":p.get("wr"),"ts":rec.get("ts")})
+                st={"names":len(NAME_HIST),"hist_bytes":HIST_STATE["bytes"]}
+            # 최근에 바꾼 사람 먼저, 시각을 모르면(옛 기록·경기에서 주운 이름) 뒤로
+            out.sort(key=lambda x:(-(x["ts"] or 0), -len(x["prev"])))
+            return self._send(200,json.dumps({"players":out,**st},ensure_ascii=False),
+                              "application/json","no-store")
         if path=="/api/search":
             qs=urllib.parse.parse_qs(u.query); q=(qs.get("q",[""])[0] or "").strip().lower()
             # 현재 닉네임 매치와 옛 닉네임 매치를 따로 모은다.
@@ -995,13 +1025,28 @@ class H(http.server.BaseHTTPRequestHandler):
         # html/js는 항상 새로 받게(수정 후 옛 화면 방지), 이미지는 오래 캐시
         cache="public, max-age=604800" if fn.startswith("img/") else "no-cache"
         with open(fp,"rb") as f: data=f.read()
+        extra=None
         if fn=="index.html":
             # OG 태그의 주소를 실제 접속 주소로 맞춘다.
             # ⚠️ 주소를 코드에 박으면 서비스 이름을 바꿀 때마다 공유 카드가 깨진다.
             host=self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
             proto=self.headers.get("X-Forwarded-Proto") or ("https" if ":443" in host else "http")
             if host: data=data.replace(b"__SITE_URL__",(proto+"://"+host.split(",")[0].strip()).encode())
-        return self._send(200,data,ct,cache)
+            # 관리자 전용 화면은 **관리자에게만 끼워 넣는다.** 남이 받는 index.html에는
+            # 코드가 한 글자도 안 들어가서 소스를 봐도 그런 메뉴가 있는 줄 모른다.
+            # ⚠️ admin.js는 ALLOWED에 없다 → /admin.js 로 직접 받아갈 수 없다.
+            adm=b""
+            if self.admin_ok():
+                try:
+                    with open(os.path.join(HERE,"admin.js"),"rb") as f: adm=f.read()
+                except Exception as e:
+                    print("[관리자] admin.js 읽기 실패:",e)
+                cache="no-store"     # 관리자용 화면이 캐시에 남지 않게
+            # 관리자가 아니면 자리표시자까지 **지운다**. 남겨두면 "여기 뭔가 들어가는구나"가 보인다
+            data=data.replace(b"//__X__",adm)
+            # ⚠️ 쿠키에 따라 내용이 달라진다. 중간 캐시가 섞어버리지 않도록 알린다.
+            extra=[("Vary","Cookie")]
+        return self._send(200,data,ct,cache,extra)
 
 def main():
     if not PID or not SEC:
