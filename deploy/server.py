@@ -688,6 +688,62 @@ def refresh_leaderboards():
     apply_leaderboards(result); rank_tick(); build_site_data()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
 
+# ── 게임서버 이름 검색 (search_players) ─────────────────────────
+# 우리 DB(수집한 유저)에 없는 사람도 **게임 전체에서** 찾아준다.
+# 프로토콜: {"type":"search_players"} {"query":"<닉네임>"} → {"player_ids":[...]}
+# ⚠️ **정확한 이름 일치**다. 부분일치는 0건이 온다(실측: 'gg'·'a' → 0, '한태준' → 1).
+# ⚠️ 게임서버 왕복이라 1~2초 걸린다. **로컬에서 못 찾았을 때만** 부른다.
+GS_TTL=int(os.environ.get("GS_TTL","300"))   # 같은 질의 재조회 방지 시간(초)
+GS_CACHE={}                                   # 질의 → (시각, [player_id...])
+GS_LOCK=threading.Lock()                      # 게임서버 조회는 한 번에 하나만(폭주 방지)
+GS_MAX=20                                     # 한 질의에서 받아올 최대 인원
+
+def search_game(q):
+    """로컬에서 못 찾은 이름을 게임서버에 되묻는다. 찾으면 프로필까지 받아
+    CACHE·이름이력에 등록해서 **다음부터는 로컬에서 바로** 나오게 한다."""
+    now=time.time()
+    with GS_LOCK:
+        hit=GS_CACHE.get(q)
+        if hit and now-hit[0]<GS_TTL: return hit[1]
+    ids=[]
+    with GS_LOCK:                  # 통신 구간을 직렬화 — 동시에 여러 소켓을 열지 않는다
+        hit=GS_CACHE.get(q)        # 기다리는 사이 다른 요청이 채웠을 수 있다
+        if hit and time.time()-hit[0]<GS_TTL: return hit[1]
+        try:
+            s=connect()
+            try:
+                s.sendall(fr({"request_id":77,"type":"search_players"},{"query":q}))
+                for _ in range(30):
+                    env,b=rd(s)
+                    if env.get("type")=="search_players":
+                        ids=[i for i in (b.get("player_ids") or []) if i and VALID_PID.match(i)][:GS_MAX]
+                        break
+                with LOCK: new=[i for i in ids if i not in CACHE["players"]]
+                if new:
+                    s.sendall(fr({"request_id":78,"type":"get_accounts_info"},{"player_ids":new,"rich_info":True}))
+                    for _ in range(30):
+                        env,b=rd(s)
+                        if env.get("type")=="get_accounts_info" and "account_info_jsons" in b:
+                            for js in b["account_info_jsons"]:
+                                try: acc=json.loads(js)
+                                except Exception: continue
+                                pid=acc.get("player_id")
+                                if not pid: continue
+                                comp=parse_acc(acc)
+                                with LOCK: CACHE["players"][pid]=comp
+                                hist_observe(pid, comp.get("n"))   # 이름이력에도 넣어야 이후 검색에 걸린다
+                            break
+                    print(f"[검색] '{q}' → 게임서버에서 {len(new)}명 새로 등록")
+                    hist_save()
+            finally:
+                try: s.close()
+                except Exception: pass
+        except Exception as e:
+            print(f"[검색] 게임서버 조회 실패 ('{q}'):",e)
+        if len(GS_CACHE)>500: GS_CACHE.clear()   # 무한정 쌓이지 않게
+        GS_CACHE[q]=(now,ids)
+    return ids
+
 NEW_MAX=int(os.environ.get("NEW_MAX","1500"))   # 한 번의 갱신에서 새로 받아올 유저 수 상한
 def fetch_new_players(ids):
     """랭킹 보드에 있는데 players 캐시에 없는 유저의 프로필을 받아 채운다.
@@ -1047,9 +1103,25 @@ class H(http.server.BaseHTTPRequestHandler):
                         dst.append({"id":pid,"n":cur or p.get("n",""),"r":p.get("r",""),
                             "wr":p.get("wr"),"lv":p.get("lv"),"prev":list(prevs),"pm":([] if curhit else mp),
                             "rk":CACHE["player_ranks"].get(pid,{})})   # 랭킹은 별도 캐시에 있음
+            # 우리 DB에 없으면 게임서버에 되묻는다(정확한 이름 일치).
+            # ⚠️ 로컬에서 한 명이라도 나오면 부르지 않는다 — 매 검색마다 1~2초를 쓸 순 없다.
+            found_live=0
+            if q and not hit_cur and not hit_prev:
+                for pid in search_game(q):
+                    with LOCK:
+                        p=CACHE["players"].get(pid)
+                        rec=NAME_HIST.get(pid) or {}
+                        rk=CACHE["player_ranks"].get(pid,{})
+                    if not p: continue
+                    hit_cur.append({"id":pid,"n":rec.get("cur") or p.get("n",""),"r":p.get("r",""),
+                        "wr":p.get("wr"),"lv":p.get("lv"),"prev":list(rec.get("prev") or []),
+                        "pm":[],"rk":rk})
+                    found_live+=1
             # 현재 닉네임 매치가 300을 다 채워도 옛 닉네임 몫 100은 보장한다
             keep=min(len(hit_prev),max(PREV_MIN,LIMIT-len(hit_cur)))
             res=(hit_cur[:LIMIT-keep]+hit_prev[:keep])[:LIMIT]
+            if found_live:
+                return self._send(200,json.dumps({"results":res,"live":found_live},ensure_ascii=False))
             return self._send(200,json.dumps({"results":res}))
         if path.startswith("/api/detail/"):
             # 프로필 상세를 서버 메모리 캐시에서 즉시 준다(게임서버 접속 없음, 1KB대).
