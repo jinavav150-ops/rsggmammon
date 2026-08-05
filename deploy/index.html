@@ -672,11 +672,16 @@ function moversHtml(){
   }
   return h+'</div></div>';
 }
+// ⚠️ 랭킹 보드에는 있는데 players에 아직 없는 유저가 생긴다(방금 랭킹에 진입한 신규 유저).
+//    P[id]를 그냥 쓰면 undefined.r 로 예외가 나고 **화면이 통째로 안 그려진다**
+//    (2026-08-05: 7월 프로 첫 페이지에 그런 유저가 걸려 "프로를 눌러도 반응 없음"으로 나타났다).
+//    서버가 다음 갱신에서 채워주지만, 그 사이에도 화면은 살아 있어야 한다.
+const PL=id=>P[id]||{};
 function boardRows(){
   const ids=B[curBoard]||[];
   let rows=ids.map((id,i)=>({id,rank:i+1}));
-  if(curRegion) rows=rows.filter(r=>P[r.id].r===curRegion);
-  if(curFilter){const f=curFilter.toLowerCase(); rows=rows.filter(r=>P[r.id].n.toLowerCase().includes(f));}
+  if(curRegion) rows=rows.filter(r=>PL(r.id).r===curRegion);
+  if(curFilter){const f=curFilter.toLowerCase(); rows=rows.filter(r=>(PL(r.id).n||'').toLowerCase().includes(f));}
   return rows;
 }
 function boardCountHtml(){
@@ -690,9 +695,10 @@ function boardBodyHtml(){
   const slice=rows.slice(curPage*PAGE,curPage*PAGE+PAGE);
   let h=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_name')}</th><th class="num">${t('c_score')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_level')}</th><th class="num hcol">${t('c_mvp')}</th></tr></thead><tbody>`;
   if(!slice.length) h+=`<tr><td colspan="6" class="empty">${t('no_result')}</td></tr>`;
-  for(const r of slice){const p=P[r.id];const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
+  for(const r of slice){const p=PL(r.id);const sc=(((p.rk||{})[curSeason]||{})[curBoard]||[])[1];   // rk는 {시즌:{보드:[순위,점수]}}
+    // 아직 프로필을 못 받은 유저는 이름 자리를 '…'로 둔다(다음 갱신에서 채워진다)
     h+=`<tr onclick="goPlayer('${r.id}')"><td class="rank ${medalCls(r.rank)}">${r.rank}${deltaHtml(curBoard,r.id)}</td>
-      <td><span class="name">${esc(p.n)}</span><span class="reg">${esc(regionName(p.r))}</span></td>
+      <td><span class="name">${p.n?esc(p.n):'<span class="muted">…</span>'}</span><span class="reg">${esc(regionName(p.r))}</span></td>
       <td class="num">${sc!=null?sc.toLocaleString():'-'}</td>
       <td class="num wr ${wrClass(p.wr)}">${p.wr!=null?p.wr+'%':'-'}</td>
       <td class="num hcol">${p.lv??'-'}</td><td class="num hcol">${p.mvp!=null?p.mvp.toLocaleString():'-'}</td></tr>`;

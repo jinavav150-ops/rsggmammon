@@ -679,12 +679,66 @@ def refresh_leaderboards():
         try: s.close()
         except Exception: pass
     result["unique_player_ids"]=sorted(allids)
+    try: fetch_new_players(allids)
+    except Exception as e: print("[갱신] 신규 유저 수집 오류:",e)
     # 원자적 저장 — 쓰다 죽어도 이전 파일이 온전히 남는다(잘린 JSON이면 다음 부팅 때 랭킹이 비어버림)
     lbp=os.path.join(DATA,"leaderboards.json")
     with open(lbp+".tmp","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False)
     os.replace(lbp+".tmp",lbp)
     apply_leaderboards(result); rank_tick(); build_site_data()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
+
+NEW_MAX=int(os.environ.get("NEW_MAX","1500"))   # 한 번의 갱신에서 새로 받아올 유저 수 상한
+def fetch_new_players(ids):
+    """랭킹 보드에 있는데 players 캐시에 없는 유저의 프로필을 받아 채운다.
+
+    ⚠️ 이게 없으면 **화면이 통째로 안 그려진다.** 화면은 P[id]로 이름·승률을 꺼내는데
+       그 유저가 없으면 예외가 나고 렌더링이 멈춘다(2026-08-05: 7월 프로 첫 페이지에
+       신규 유저가 걸려 "프로를 눌러도 반응 없음"). 화면에도 방어를 넣었지만,
+       빈칸으로 두지 않으려면 여기서 채우는 게 맞다.
+    ⚠️ players.json은 오프라인 수집 스크립트가 만든다. 시즌이 흐르면 랭킹에 새로 진입한
+       유저가 계속 생기므로, 서버가 스스로 메꿔야 한다."""
+    with LOCK: missing=[i for i in ids if i not in CACHE["players"]]
+    if not missing: return 0
+    capped=missing[:NEW_MAX]
+    if len(missing)>NEW_MAX:
+        print(f"[갱신] 신규 유저 {len(missing)}명 중 {NEW_MAX}명만 이번에 수집 (나머지는 다음 갱신)")
+    print(f"[갱신] 신규 유저 {len(capped)}명 프로필 수집...")
+    s=connect(); rid=7000; got=0
+    try:
+        i=0
+        while i<len(capped):
+            batch=capped[i:i+60]; rid+=1
+            try:
+                s.sendall(fr({"request_id":rid,"type":"get_accounts_info"},{"player_ids":batch,"rich_info":True}))
+                for _ in range(40):
+                    env,body=rd(s)
+                    if env.get("type")=="get_accounts_info" and "account_info_jsons" in body:
+                        for js in body["account_info_jsons"]:
+                            try: acc=json.loads(js)
+                            except Exception: continue
+                            pid=acc.get("player_id")
+                            if not pid: continue
+                            comp=parse_acc(acc)
+                            with LOCK: CACHE["players"][pid]=comp
+                            hist_observe(pid, comp.get("n"))   # 이름이력에도 등록(검색되게)
+                            got+=1
+                        break
+                i+=60
+            except (ConnectionError, socket.timeout, OSError):
+                try: s.close()
+                except Exception: pass
+                time.sleep(1); s=connect(); continue
+            time.sleep(0.1)
+    finally:
+        try: s.close()
+        except Exception: pass
+    with LOCK:
+        for pid,rec in NAME_HIST.items():
+            if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+    hist_save()
+    print(f"[갱신] 신규 유저 {got}명 추가 (총 {len(CACHE['players'])}명)")
+    return got
 
 def scheduler():
     while True:
