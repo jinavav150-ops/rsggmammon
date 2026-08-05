@@ -9,7 +9,12 @@
 import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64, gzip, re, hashlib, hmac
 
 # ── 설정 ─────────────────────────────────────────────
-HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"; PORT=21300
+HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
+# ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400.
+#    주소·프로토콜(길이헤더 6B + JSON)은 그대로였고 포트만 옮겨갔다.
+#    또 바뀌면 코드 수정 없이 Render 환경변수 RS_PORT만 고치면 된다.
+#    (Render가 쓰는 PORT 환경변수는 웹 포트라 이름이 겹치면 안 된다 → RS_PORT)
+PORT=int(os.environ.get("RS_PORT","21400"))
 PID=os.environ.get("RS_PID",""); SEC=os.environ.get("RS_SEC","")  # 환경변수에서 (코드에 secret 없음)
 # 시즌은 박아두지 않는다. 서버에 물어서 참가자가 있는 달을 찾는다.
 # (예전엔 "202607"이 박혀 있어서 8월이 됐는데 7월 보드만 갱신하는 사고가 났다.)
@@ -86,16 +91,25 @@ def rd(s):
         return buf
     h=rn(6); el=struct.unpack("<H",h[:2])[0]; bl=struct.unpack("<I",h[2:6])[0]
     return json.loads(rn(el).decode("utf-8","ignore")),(json.loads(rn(bl).decode("utf-8","ignore")) if bl else {})
+GAME_STATE={"ok":None,"err":"미시도","at":0}   # 게임서버 접속 상태 (/api/status 로 확인)
 def connect():
-    try: s=socket.create_connection((HOST,PORT),timeout=10)
-    except Exception: s=socket.create_connection((IP,PORT),timeout=10)
+    # ⚠️ 여기서 실패하면 사이트는 멀쩡한데 데이터만 안 쌓인다. UptimeRobot은 /api/status가
+    #    200이라 초록으로 보고한다(2026-08-04에 20시간 동안 못 알아챘다). 그래서 상태를 남긴다.
+    try:
+        try: s=socket.create_connection((HOST,PORT),timeout=10)
+        except Exception: s=socket.create_connection((IP,PORT),timeout=10)
+    except Exception as e:
+        GAME_STATE.update(ok=False,err=f"연결실패 {type(e).__name__} (포트 {PORT})",at=int(time.time()))
+        raise
     # ⚠️ 인증 도중 터지면 소켓을 반드시 닫는다. 예전엔 여기서 예외가 나면 소켓이
     #    영영 안 닫혀서, 게임서버가 느릴 때마다 fd가 1개씩 새어 결국 서버가 접속을 못 받았다.
     try:
         s.settimeout(20)
         s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC})); rd(s)
+        GAME_STATE.update(ok=True,err="",at=int(time.time()))
         return s
-    except Exception:
+    except Exception as e:
+        GAME_STATE.update(ok=False,err=f"인증실패 {type(e).__name__}",at=int(time.time()))
         try: s.close()
         except Exception: pass
         raise
@@ -932,6 +946,9 @@ class H(http.server.BaseHTTPRequestHandler):
                 "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
                 "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
                 "names":len(NAME_HIST),"renamed":HIST_STATE["n"],"hist_bytes":HIST_STATE["bytes"],
+                # 게임서버 접속 상태 — 웹서버가 살아있어도 여기가 죽으면 데이터가 안 쌓인다
+                "game":GAME_STATE["ok"],"game_err":GAME_STATE["err"],"game_port":PORT,
+                "stale_min":int((time.time()-CACHE["last_refresh"])/60) if CACHE["last_refresh"] else None,
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
         if path=="/api/renamed":
