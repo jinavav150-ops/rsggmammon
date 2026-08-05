@@ -31,6 +31,21 @@
   window.addEventListener('hashchange', render);
 
   var CACHE = null;
+  var curRg = '';   // '' = 전체, 그 외 'ap' | 'eu' | 'us' | 'etc'
+
+  // 지역 묶음. 코드가 ap-northeast-2 / eu-central-1 / us-east-1 처럼 대륙 접두사로 오므로
+  // 접두사로 나눈다 — 나중에 새 지역(ap-south-1 등)이 생겨도 알아서 제자리에 들어간다.
+  var GROUPS = [
+    { k: 'ap',  label: '아시아' },
+    { k: 'eu',  label: '유럽' },
+    { k: 'us',  label: '아메리카' }
+  ];
+  function rgOf(r){
+    r = String(r || '');
+    for (var i=0; i<GROUPS.length; i++) if (r.indexOf(GROUPS[i].k + '-') === 0) return GROUPS[i].k;
+    return 'etc';
+  }
+  window.goRenamedRg = function(k){ curRg = k; if (CACHE) paint(CACHE); };
 
   function renderRenamed(){
     hidePerkTip();
@@ -57,9 +72,27 @@
   }
 
   function paint(j){
-    var rows = j.players || [];
+    var all = j.players || [];
+    // 지역별 개수를 먼저 센다(버튼에 표시 + 해당자 없는 묶음은 버튼을 안 만든다)
+    var cnt = {};
+    for (var a=0; a<all.length; a++){ var g = rgOf(all[a].r); cnt[g] = (cnt[g]||0) + 1; }
+    if (curRg && !cnt[curRg]) curRg = '';           // 지금 고른 지역에 아무도 없으면 전체로
+    var rows = curRg ? all.filter(function(p){ return rgOf(p.r) === curRg; }) : all;
+
     var h = tabsHtml();
+    // 지역 필터 — 전체 / 아시아 / 유럽 / 아메리카 (+ 분류 밖이 있으면 기타)
+    var btns = [{ k: '', label: '전체', n: all.length }];
+    for (var g=0; g<GROUPS.length; g++)
+      if (cnt[GROUPS[g].k]) btns.push({ k: GROUPS[g].k, label: GROUPS[g].label, n: cnt[GROUPS[g].k] });
+    if (cnt['etc']) btns.push({ k: 'etc', label: '기타', n: cnt['etc'] });
+    h += '<div class="tabs" style="margin-top:10px">' + btns.map(function(b){
+      return '<div class="tab' + (curRg === b.k ? ' on' : '') + '" onclick="goRenamedRg(\'' + b.k + '\')">' +
+             b.label + ' <span style="font-size:11px;opacity:.7">' + b.n + '</span></div>';
+    }).join('') + '</div>';
+
     h += '<div class="sect-t">개명 이력 ' + rows.length + '명' +
+         (curRg ? ' <span class="muted" style="font-size:13px;font-weight:400">(' +
+            (btns.filter(function(b){return b.k===curRg;})[0]||{}).label + ')</span>' : '') +
          '<span class="muted" style="font-size:12px;font-weight:400"> · 이름 ' + (j.names||0) + '개 추적 중' +
          (j.hist_bytes ? ' · 저장 ' + (j.hist_bytes/1024).toFixed(1) + 'KB' : '') + '</span></div>';
     h += '<div class="card" style="overflow-x:auto"><table><thead><tr>' +
