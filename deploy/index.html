@@ -717,8 +717,21 @@ window.goPage=n=>{
   const body=document.getElementById('boardBody');
   if(body) body.innerHTML=boardBodyHtml(); else render();
 };
+// 프로 시즌은 캐주얼과 주기가 다르다 — 2026-08 실측: 캐주얼은 202608인데 프로는 202607이
+// 8/15까지 이어진다. 서버가 진행 중인 프로 보드를 이번 달 탭에 붙여 주므로(안 그러면
+// "8월엔 프로가 없다"가 된다), 그게 실제로 어느 시즌인지는 여기서 밝힌다.
+const kstStamp=ts=>{const d=new Date((ts+9*3600)*1000).toISOString();
+  return d.slice(5,7)+'/'+d.slice(8,10)+' '+d.slice(11,16);};
+function proNoteHtml(){
+  const m=BM[curBoard];
+  if(curBoard!=='pro'||!m||!m.season||m.season===curSeason) return '';
+  let s=t('pro_season_note',{s:seasonLabel(m.season)});
+  if(m.next_ts) s+=' · '+t('pro_season_next',{d:kstStamp(m.next_ts)});
+  return `<div class="muted" style="margin:-4px 0 10px;font-size:12px">${s}</div>`;
+}
 function renderBoard(){
   let h=tabsHtml();
+  h+=proNoteHtml();
   h+=`<div class="row-filter">${regionOptions()}
     <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
     <span class="muted" id="boardCount">${boardCountHtml()}</span></div>`;

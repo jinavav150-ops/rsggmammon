@@ -580,6 +580,75 @@ def find_seasons(s):
 def label_of(kind,label): return label if kind=="hero" else ("pro" if kind=="pro" else "casual")
 # 보드 키는 언어중립(pro/casual/영문 캐릭터명). 표시 이름은 브라우저가 언어별로 붙인다.
 
+# ── 프로 시즌은 캐주얼과 주기가 다르다 ─────────────────────────
+# 2026-08-13 실측(게임서버에 직접 물어봄):
+#   RatingCasualSeason_CurrentSuffix = 202608, 다음 시작 9/1 09:00
+#   RatingProSeason_CurrentSuffix    = 202607, 다음 시작 8/15 09:00   ← 달이 안 맞는다
+#   rating_pro_0_202608 은 **크기 0**이고, rating_pro_0_202607 이 지금도 살아 움직인다
+#   (8/5 스냅샷 2,269명 → 8/13 2,453명, 1,456명의 점수가 바뀌었다)
+# 그래서 보드 이름의 달로 시즌 탭을 짝지으면 "8월엔 프로가 없다"가 되고,
+# 지금 돌아가는 프로 랭킹이 지난달 탭에 숨는다. 살아있는 프로 보드는 현재 시즌 탭에 붙인다.
+PRO_SUFFIX_C="79016390"   # RatingProSeason_CurrentSuffix
+PRO_NEXT_C="79012751"     # RatingProSeason_NextStartTimestamp
+def pro_board(code): return f"rating_pro_0_{code}"
+
+def pro_season_info(s,pid,rid):
+    """프로 보드 1위 계정에서 '게임이 말하는 현재 프로 시즌'을 읽는다 → (시즌코드, 다음시작시각).
+    ⚠️ 이 카운터는 **프로를 해 본 계정에만** 있다(수집용 계정엔 없어서 자기 자신에겐 못 묻는다).
+    실패해도 갱신 전체를 망치면 안 된다 → 예외는 삼키고 (None,None)."""
+    try:
+        s.sendall(fr({"request_id":rid,"type":"get_accounts_info"},{"player_ids":[pid],"rich_info":True}))
+        for _ in range(60):
+            env,body=rd(s)
+            if env.get("type")=="get_accounts_info" and "account_info_jsons" in body:
+                a=json.loads((body.get("account_info_jsons") or ["{}"])[0])
+                cc=(a.get("counters_state") or {}).get("counter_collection",{})
+                g=lambda k:(cc.get(k,{}) or {}).get("value")
+                cur=g(PRO_SUFFIX_C)
+                return (str(cur) if cur else None), g(PRO_NEXT_C)
+    except Exception as e:
+        print("[갱신] 프로 시즌 확인 실패:",e)
+    return None,None
+
+def attach_live_pro(s,seasons,result,rid):
+    """진행 중인 프로 보드를 현재 시즌(seasons[0]) 탭으로 옮긴다.
+    끝난 프로 시즌은 건드리지 않는다 — 자기 달 탭에 그대로 둔다."""
+    if not seasons: return
+    cur=seasons[0]
+    found=[c for c in seasons if pro_board(c) in (result["boards"].get(c) or {})]
+    if not found:
+        # 유지 중인 시즌(2개)보다 길게 끄는 프로 시즌 — 더 거슬러 올라가 찾는다.
+        for code in month_codes():
+            if code in seasons: continue
+            rid+=1
+            try: body=lb_get(s,pro_board(code),rid)
+            except Exception: body=None
+            ids=(body or {}).get("top_player_ids") or []
+            if not ids: continue
+            sc=body.get("top_player_scores") or []
+            result["boards"].setdefault(code,{})[pro_board(code)]={
+                "kind":"pro","label":"pro","season":code,"size":body.get("leaderboard_size"),
+                "entries":[{"rank":i+1,"player_id":p,"score":s2} for i,(p,s2) in enumerate(zip(ids,sc))]}
+            found=[code]; break
+    if not found:
+        print("[갱신] 프로 보드를 못 찾았다"); return
+    live=max(found)                      # YYYYMM은 사전순=시간순. 가장 최신 = 진행 중인 것
+    mb=result["boards"][live][pro_board(live)]
+    top=(mb["entries"][0]["player_id"] if mb.get("entries") else None)
+    cur_suffix,next_ts=pro_season_info(s,top,rid+900) if top else (None,None)
+    if cur_suffix and cur_suffix!=live:
+        # 게임이 "지금은 다른 시즌"이라고 한다 = 이 보드는 이미 끝난 시즌 → 옮기지 않는다
+        print(f"[갱신] 프로 보드 {live}은 끝난 시즌(게임 기준 현재 {cur_suffix}) · 그대로 둔다")
+        return
+    mb["live"]=True
+    if next_ts: mb["next_ts"]=next_ts
+    result["pro_season"]=live
+    if live!=cur:
+        result["boards"].setdefault(cur,{})[pro_board(live)]=result["boards"][live].pop(pro_board(live))
+        print(f"[갱신] 프로 시즌 {live}이 아직 진행 중 → {cur} 탭에 붙였다"
+              + (f" (다음 시즌 {time.strftime('%m/%d %H:%M',time.localtime(next_ts))})" if next_ts else ""))
+
+
 def apply_leaderboards(lb):
     """시즌별로 보드를 정리한다. ranks는 {유저: {시즌: {보드: [순위, 점수]}}}."""
     seasons=lb.get("seasons") or []
@@ -595,6 +664,9 @@ def apply_leaderboards(lb):
         for name,mb in (by_season.get(season) or {}).items():
             lab=label_of(mb["kind"],mb["label"]); blabels.append(lab)
             meta[lab]={"size":mb["size"],"kind":mb["kind"]}
+            # 프로 보드는 시즌 주기가 달라 다른 달 탭에 얹혀 있을 수 있다 → 실제 시즌을 같이 알려준다
+            for k in ("season","live","next_ts"):
+                if mb.get(k) is not None: meta[lab][k]=mb[k]
             if mb["kind"]=="hero": hlabels.append(lab)
             ordered=[]
             for e in mb["entries"]:
@@ -671,10 +743,15 @@ def refresh_leaderboards():
                 if not isinstance(body,dict): continue
                 ids=body.get("top_player_ids",[]); sc=body.get("top_player_scores",[])
                 if not ids: continue      # 아직 안 열린 보드(예: 시즌 초 프로)
-                sb[name]={"kind":kind,"label":label,"size":body.get("leaderboard_size"),
+                sb[name]={"kind":kind,"label":label,"season":season,"size":body.get("leaderboard_size"),
                     "entries":[{"rank":i+1,"player_id":pid,"score":s2} for i,(pid,s2) in enumerate(zip(ids,sc))]}
                 allids.update(ids)
             result["boards"][season]=sb
+        # 프로는 캐주얼과 시즌 주기가 다르다 — 진행 중인 프로 보드를 현재 시즌 탭으로 옮긴다
+        try: attach_live_pro(s,seasons,result,rid+500)
+        except Exception as e: print("[갱신] 프로 시즌 정리 오류:",e)
+        for sb2 in result["boards"].values():
+            for mb2 in sb2.values(): allids.update(e["player_id"] for e in mb2.get("entries") or [])
     finally:
         try: s.close()
         except Exception: pass
