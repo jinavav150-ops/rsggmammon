@@ -7,6 +7,11 @@
 실행:  python3 server.py   →  브라우저에서 http://localhost:8000
 """
 import socket, struct, json, os, time, threading, http.server, urllib.parse, urllib.request, zlib, base64, gzip, re, hashlib, hmac
+import sys
+# ⚠️ Render처럼 stdout이 터미널이 아니면 print가 8KB씩 모였다가 한꺼번에 나간다 → 대시보드 로그가
+#    며칠씩 비어 보인다(2026-08-19: 30분마다 찍는 [갱신] 로그가 "5일 전"으로 표시됐다). 줄 단위로 바로 내보낸다.
+try: sys.stdout.reconfigure(line_buffering=True); sys.stderr.reconfigure(line_buffering=True)
+except Exception: pass
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
@@ -92,6 +97,9 @@ def rd(s):
     h=rn(6); el=struct.unpack("<H",h[:2])[0]; bl=struct.unpack("<I",h[2:6])[0]
     return json.loads(rn(el).decode("utf-8","ignore")),(json.loads(rn(bl).decode("utf-8","ignore")) if bl else {})
 GAME_STATE={"ok":None,"err":"미시도","at":0}   # 게임서버 접속 상태 (/api/status 로 확인)
+FRESH={"ok":False}   # 이번 프로세스에서 리더보드를 게임서버에서 한 번이라도 받아왔나
+# ⚠️ 재배포 직후엔 저장소에 든 옛 씨앗(leaderboards.json)만 메모리에 있다. 그 상태로 "오늘 기준선"을
+#    저장하면 그날 랭킹 변동이 전부 엉터리(씨앗 대비)가 된다 → 씨앗으로는 새 기준선을 만들지 않는다.
 def connect():
     # ⚠️ 여기서 실패하면 사이트는 멀쩡한데 데이터만 안 쌓인다. UptimeRobot은 /api/status가
     #    200이라 초록으로 보고한다(2026-08-04에 20시간 동안 못 알아챘다). 그래서 상태를 남긴다.
@@ -475,6 +483,7 @@ def rank_tick():
                 RANK["base"]=snap_lookup(snap); RANK["base_day"]=day; return
         with LOCK: has=bool(CACHE["sdata"])
         if not has: return                        # 랭킹이 아직 안 올라왔으면 저장하지 않는다
+        if not FRESH["ok"]: return                # 재배포 직후 씨앗 데이터 — 진짜 갱신 뒤에 잡는다
         snap=build_snapshot()
         days=sorted(set(RANK["days"])|{day})
         old=days[:-RANK_KEEP_DAYS]; days=days[-RANK_KEEP_DAYS:]
@@ -591,31 +600,51 @@ def label_of(kind,label): return label if kind=="hero" else ("pro" if kind=="pro
 PRO_SUFFIX_C="79016390"   # RatingProSeason_CurrentSuffix
 PRO_NEXT_C="79012751"     # RatingProSeason_NextStartTimestamp
 def pro_board(code): return f"rating_pro_0_{code}"
+# ⚠️ "비어있지 않은 보드 = 열린 시즌"이 아니다. 시계가 틀린 클라이언트가 **미래 시즌 보드**에
+#    박혀 있다(2026-08-19 실측: rating_pro_0_202609 · rating_casual_0_202609 · rating_pro_0_202612 에
+#    같은 유저 1명, 그 계정의 시즌 카운터는 202606). 이 떠돌이를 "9월 프로 시즌이 열렸다"로 읽으면
+#    9/1에 진행 중인 8월 프로 보드가 9월 탭에 안 붙고, 9월 탭엔 1명짜리 프로 보드가 뜬다.
+PRO_MIN_REAL=20           # 이보다 작은 프로 보드는 그 자체로는 "열린 시즌"의 증거로 안 본다
+PRO_ASK_TOP=10            # 현재 시즌을 물어볼 유저 수 (가장 큰 보드 상위 N + 나머지 보드 상위 3)
 
-def pro_season_info(s,pid,rid):
-    """프로 보드 1위 계정에서 '게임이 말하는 현재 프로 시즌'을 읽는다 → (시즌코드, 다음시작시각).
+def pro_season_info(s,pids,rid):
+    """프로 유저 여러 명에게 물어 '게임이 말하는 현재 프로 시즌'을 고른다 → (시즌코드, 다음시작시각).
     ⚠️ 이 카운터는 **프로를 해 본 계정에만** 있다(수집용 계정엔 없어서 자기 자신에겐 못 묻는다).
+    ⚠️ 한 명에게만 물으면 위험하다 — 시즌이 바뀐 뒤 아직 접속 안 한 계정은 **옛 값**을 들고 있고,
+       시계가 틀린 계정은 **엉뚱한 값**을 들고 있다(실측 202606). 그래서 여러 명의 **최빈값**을 쓰고,
+       동률이면 최신 쪽을 고른다(시즌 코드는 앞으로만 간다).
     실패해도 갱신 전체를 망치면 안 된다 → 예외는 삼키고 (None,None)."""
+    pids=[p for p in dict.fromkeys(pids) if p]
+    if not pids: return None,None
+    votes={}; nxt={}
     try:
-        s.sendall(fr({"request_id":rid,"type":"get_accounts_info"},{"player_ids":[pid],"rich_info":True}))
+        s.sendall(fr({"request_id":rid,"type":"get_accounts_info"},{"player_ids":pids,"rich_info":True}))
         for _ in range(60):
             env,body=rd(s)
             if env.get("type")=="get_accounts_info" and "account_info_jsons" in body:
-                a=json.loads((body.get("account_info_jsons") or ["{}"])[0])
-                cc=(a.get("counters_state") or {}).get("counter_collection",{})
-                g=lambda k:(cc.get(k,{}) or {}).get("value")
-                cur=g(PRO_SUFFIX_C)
-                return (str(cur) if cur else None), g(PRO_NEXT_C)
+                for aj in body.get("account_info_jsons") or []:
+                    try: a=json.loads(aj)
+                    except Exception: continue
+                    cc=(a.get("counters_state") or {}).get("counter_collection",{})
+                    g=lambda k:(cc.get(k,{}) or {}).get("value")
+                    cur=g(PRO_SUFFIX_C)
+                    if not cur: continue
+                    cur=str(cur); votes[cur]=votes.get(cur,0)+1
+                    if g(PRO_NEXT_C): nxt.setdefault(cur,g(PRO_NEXT_C))
+                break
     except Exception as e:
         print("[갱신] 프로 시즌 확인 실패:",e)
-    return None,None
+    if not votes: return None,None
+    best=max(votes, key=lambda c:(votes[c],c))     # 최빈값, 동률이면 최신
+    if len(votes)>1: print(f"[갱신] 프로 시즌 투표 {votes} → {best}")
+    return best, nxt.get(best)
 
 def attach_live_pro(s,seasons,result,rid):
     """진행 중인 프로 보드를 현재 시즌(seasons[0]) 탭으로 옮긴다.
-    끝난 프로 시즌은 건드리지 않는다 — 자기 달 탭에 그대로 둔다."""
+    끝난 프로 시즌은 건드리지 않는다(자기 달 탭에 그대로). 미래 시즌의 떠돌이 보드는 지운다."""
     if not seasons: return
     cur=seasons[0]
-    found=[c for c in seasons if pro_board(c) in (result["boards"].get(c) or {})]
+    found={c:result["boards"][c][pro_board(c)] for c in seasons if pro_board(c) in (result["boards"].get(c) or {})}
     if not found:
         # 유지 중인 시즌(2개)보다 길게 끄는 프로 시즌 — 더 거슬러 올라가 찾는다.
         for code in month_codes():
@@ -626,28 +655,38 @@ def attach_live_pro(s,seasons,result,rid):
             ids=(body or {}).get("top_player_ids") or []
             if not ids: continue
             sc=body.get("top_player_scores") or []
-            result["boards"].setdefault(code,{})[pro_board(code)]={
-                "kind":"pro","label":"pro","season":code,"size":body.get("leaderboard_size"),
+            mb={"kind":"pro","label":"pro","season":code,"size":body.get("leaderboard_size"),
                 "entries":[{"rank":i+1,"player_id":p,"score":s2} for i,(p,s2) in enumerate(zip(ids,sc))]}
-            found=[code]; break
+            result["boards"].setdefault(code,{})[pro_board(code)]=mb
+            found={code:mb}; break
     if not found:
         print("[갱신] 프로 보드를 못 찾았다"); return
-    live=max(found)                      # YYYYMM은 사전순=시간순. 가장 최신 = 진행 중인 것
-    mb=result["boards"][live][pro_board(live)]
-    top=(mb["entries"][0]["player_id"] if mb.get("entries") else None)
-    cur_suffix,next_ts=pro_season_info(s,top,rid+900) if top else (None,None)
-    if cur_suffix and cur_suffix!=live:
-        # 게임이 "지금은 다른 시즌"이라고 한다 = 이 보드는 이미 끝난 시즌 → 옮기지 않는다
-        print(f"[갱신] 프로 보드 {live}은 끝난 시즌(게임 기준 현재 {cur_suffix}) · 그대로 둔다")
-        return
+    # 게임이 말하는 현재 프로 시즌: 가장 큰 보드(=확실히 진짜 프로들)의 상위 N명 + 나머지 보드 상위 3명에게 묻는다
+    by_size=sorted(found, key=lambda c:-len(found[c].get("entries") or []))
+    ask=[e["player_id"] for e in (found[by_size[0]].get("entries") or [])[:PRO_ASK_TOP]]
+    for c in by_size[1:]: ask+=[e["player_id"] for e in (found[c].get("entries") or [])[:3]]
+    declared,next_ts=pro_season_info(s,ask,rid+900)
+    # 진행 중인 시즌 = 게임이 말한 시즌(그 보드가 있으면). 단, 그보다 최신인데 **충분히 큰** 보드가
+    # 있으면 게임 답이 낡은 것(아직 아무도 접속 안 함)이니 보드를 믿는다.
+    real=[c for c in found if len(found[c].get("entries") or [])>=PRO_MIN_REAL]
+    cands=set(real) | ({declared} if declared in found else set())
+    live=max(cands) if cands else max(found)
+    if declared and declared!=live and declared in found:
+        print(f"[갱신] 프로 시즌: 게임은 {declared}라지만 {live} 보드가 이미 크다 → {live}를 진행 중으로 본다")
+    # 진행 중인 것보다 미래인 보드 = 시계 틀린 유저의 떠돌이 → 화면에 안 낸다
+    for c in list(found):
+        if c>live:
+            n=len(found[c].get("entries") or [])
+            result["boards"][c].pop(pro_board(c),None)
+            print(f"[갱신] 프로 보드 {c}({n}명)는 아직 안 열린 시즌의 떠돌이 → 뺐다")
+    mb=found[live]
     mb["live"]=True
-    if next_ts: mb["next_ts"]=next_ts
+    if next_ts and (declared==live): mb["next_ts"]=next_ts
     result["pro_season"]=live
     if live!=cur:
         result["boards"].setdefault(cur,{})[pro_board(live)]=result["boards"][live].pop(pro_board(live))
         print(f"[갱신] 프로 시즌 {live}이 아직 진행 중 → {cur} 탭에 붙였다"
-              + (f" (다음 시즌 {time.strftime('%m/%d %H:%M',time.localtime(next_ts))})" if next_ts else ""))
-
+              + (f" (다음 시즌 {time.strftime('%m/%d %H:%M',time.localtime(mb['next_ts']))})" if mb.get("next_ts") else ""))
 
 def apply_leaderboards(lb):
     """시즌별로 보드를 정리한다. ranks는 {유저: {시즌: {보드: [순위, 점수]}}}."""
@@ -762,7 +801,7 @@ def refresh_leaderboards():
     lbp=os.path.join(DATA,"leaderboards.json")
     with open(lbp+".tmp","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False)
     os.replace(lbp+".tmp",lbp)
-    apply_leaderboards(result); rank_tick(); build_site_data()
+    apply_leaderboards(result); FRESH["ok"]=True; rank_tick(); build_site_data()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
 
 # ── 게임서버 이름 검색 (search_players) ─────────────────────────
@@ -872,6 +911,12 @@ def fetch_new_players(ids):
     hist_save()
     print(f"[갱신] 신규 유저 {got}명 추가 (총 {len(CACHE['players'])}명)")
     return got
+
+def boot_refresh():
+    """부팅 직후 1회 갱신. 재배포하면 저장소의 옛 씨앗(8/2 리더보드·8,180명)부터 읽는데, 첫 정기 갱신까지
+    30분을 그대로 보여줬다(프로 시즌 탭 배치도 옛날 것). 서버는 이미 떠 있으니 뒤에서 바로 채운다."""
+    try: refresh_leaderboards()
+    except Exception as e: print("[갱신] 부팅 갱신 오류:",e)
 
 def scheduler():
     while True:
@@ -1273,8 +1318,9 @@ def main():
         print("!! 환경변수 RS_PID / RS_SEC 가 설정되지 않았습니다. (클라우드 대시보드에서 설정)")
     print("데이터 로드 중...")
     load_disk()
-    rank_tick()          # 첫 갱신(30분 뒤)까지 기다리지 않고 오늘 기준선부터 잡는다
+    rank_tick()          # 재시작이면 저장돼 있던 오늘 기준선을 다시 읽는다(새 기준선은 진짜 갱신 뒤에)
     build_site_data()
+    threading.Thread(target=boot_refresh,daemon=True).start()   # 씨앗 → 실데이터 (1~2분)
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=sweep_scheduler,daemon=True).start()
     srv=http.server.ThreadingHTTPServer(("0.0.0.0",WEB_PORT),H)
