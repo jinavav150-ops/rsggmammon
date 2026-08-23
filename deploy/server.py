@@ -1037,7 +1037,8 @@ def parse_matches(jsons, pid):
                 sq=p.get("SquadId") or ""
                 if re.match(r"^\d+_\d+$",sq): q["sq"]=sq
         avg=m.get("AvgTeamRating")   # 매치 전체 평균 레이팅 ("이 판의 수준")
-        out.append({"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
+        # mid = 매치 코드. 게임 안에서 리플레이를 볼 때 입력하는 코드가 이것이다(ReplayKey 경로 끝과 같다)
+        out.append({"mid":m.get("MatchId"),"ts":m.get("Timestamp"),"type":m.get("MatchType"),"t1":m.get("Team1Score"),"t2":m.get("Team2Score"),"dur":m.get("MatchTime"),
             "avg":(round(avg) if isinstance(avg,(int,float)) else None),
             "win":me.get("Team")==m.get("WinnerTeam"),"myhero":hero_name(me.get("LastUsedHeroId")),
             "mymvp":int(me.get("MvpPoints",0)),"myrt":me.get("Rating"),"myk":me.get("Eliminations"),"myd":me.get("Deaths"),"mys":(m.get("Team1Score") if me.get("Team")==1 else m.get("Team2Score")) or 0,"ens":(m.get("Team2Score") if me.get("Team")==1 else m.get("Team1Score")) or 0,"mvpme":me.get("PlayerId")==m.get("MVPId"),"map":str(m.get("LevelId") or ""),"dmg":me.get("Damage"),"players":players})

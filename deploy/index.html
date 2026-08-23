@@ -132,6 +132,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .mrow:hover{background:var(--panel2)}
 .rb{display:inline-block;font-weight:800;border-radius:5px;padding:2px 9px;font-size:12px;color:#fff}
 .rb.win{background:var(--win)} .rb.loss{background:var(--lose)}
+.mcode{display:inline-flex;align-items:center;gap:4px;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:700;letter-spacing:.3px;color:var(--acc2);background:rgba(99,102,241,.10);border:1px solid rgba(99,102,241,.35);border-radius:5px;padding:1px 6px;cursor:pointer;white-space:nowrap;user-select:all}
+.mcode:hover{background:rgba(99,102,241,.22)} .mcode.ok{color:var(--win);border-color:var(--win)}
 .mvpb{background:linear-gradient(90deg,#e0a90f,#ffd76b);color:#1a1a1a;font-weight:800;font-size:10px;border-radius:4px;padding:2px 5px}
 .hcell{font-weight:700}
 .mdet>td{background:var(--panel2);border-bottom:2px solid var(--line)}
@@ -876,7 +878,7 @@ function matchesHtml(matches){
       <td class="num">${m.myk??'-'} / ${m.myd??'-'}<span class="mdmg">${t('dmg_abbr')} ${num(m.dmg)}</span></td>
       <td class="num hcol">${num(m.dmg)}</td>
       <td class="num hcol">${num(m.myrt)}</td>
-      <td class="muted">${ago(m.ts)}</td></tr>`;
+      <td class="muted">${ago(m.ts)}${m.mid?`<div><span class="mcode" title="${t('replay_code')}" onclick="event.stopPropagation();copyCode(this,'${esc(m.mid)}')">🎬 ${esc(m.mid)}</span></div>`:''}</td></tr>`;
     const statsOf=x=>{const a=[];
       if(x.mvp) a.push(`${t('score_abbr')} <b>${x.mvp.toLocaleString()}</b>`);
       if(x.dmg!=null) a.push(`${t('dmg_abbr')} <b>${x.dmg.toLocaleString()}</b>`);
@@ -908,6 +910,10 @@ function matchesHtml(matches){
   });
   return h+'</tbody></table></div>';
 }
+// 리플레이 코드 복사. 게임의 리플레이 메뉴에 이 코드를 넣으면 그 경기를 볼 수 있다.
+window.copyCode=(el,code)=>{const done=()=>{const o=el.innerHTML;el.classList.add('ok');el.innerHTML='✓ '+t('copied');setTimeout(()=>{el.classList.remove('ok');el.innerHTML=o;},1200);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(code).then(done).catch(()=>{});}
+  else{const r=document.createRange();r.selectNodeContents(el);const sel=getSelection();sel.removeAllRanges();sel.addRange(r);try{document.execCommand('copy');done();}catch(e){}}};
 window.toggleMatch=i=>{const el=document.getElementById('md'+i);if(el)el.style.display=el.style.display==='none'?'':'none';};
 // 옛 닉네임 매치는 여러 개일 수 있다(6번 바꿨으면 6개 다 검색 대상).
 // 서버는 배열, 옛 응답·클라 폴백은 문자열이라 양쪽 다 받는다.
