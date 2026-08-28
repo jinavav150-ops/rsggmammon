@@ -19,7 +19,7 @@ HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
 #    주소·프로토콜(길이헤더 6B + JSON)은 그대로였고 포트만 옮겨갔다.
 #    또 바뀌면 코드 수정 없이 Render 환경변수 RS_PORT만 고치면 된다.
 #    (Render가 쓰는 PORT 환경변수는 웹 포트라 이름이 겹치면 안 된다 → RS_PORT)
-PORT=int(os.environ.get("RS_PORT","21500"))
+PORT=int(os.environ.get("RS_PORT","22000"))
 PID=os.environ.get("RS_PID",""); SEC=os.environ.get("RS_SEC","")  # 환경변수에서 (코드에 secret 없음)
 # 시즌은 박아두지 않는다. 서버에 물어서 참가자가 있는 달을 찾는다.
 # (예전엔 "202607"이 박혀 있어서 8월이 됐는데 7월 보드만 갱신하는 사고가 났다.)
@@ -100,15 +100,79 @@ GAME_STATE={"ok":None,"err":"미시도","at":0}   # 게임서버 접속 상태 (
 FRESH={"ok":False}   # 이번 프로세스에서 리더보드를 게임서버에서 한 번이라도 받아왔나
 # ⚠️ 재배포 직후엔 저장소에 든 옛 씨앗(leaderboards.json)만 메모리에 있다. 그 상태로 "오늘 기준선"을
 #    저장하면 그날 랭킹 변동이 전부 엉터리(씨앗 대비)가 된다 → 씨앗으로는 새 기준선을 만들지 않는다.
+
+# ── 자동 포트 탐색 ───────────────────────────────────
+# 게임 업데이트마다 포트가 바뀐다(21300→21400→21500→22000 · 증가폭 규칙 없음).
+# 접속이 실패하면 20000~24000을 스캔해 "인증까지 되는" 포트를 찾아 그 자리에서 갈아탄다.
+# ⚠️ TCP가 열렸다고 게임서버인 게 아니다 — 반드시 authenticate_account 성공까지 확인한다.
+# ⚠️ 스캔은 실패했을 때만, 10분에 1번만 돈다(게임서버 자체가 내려간 동안 헛스캔 방지).
+# 찾은 포트는 이 프로세스에서만 유효하다 — 재배포하면 RS_PORT 환경변수로 돌아가므로,
+# 로그에 남는 새 포트로 환경변수도 바꿔둬야 다음 재배포 후에도 유지된다.
+PORT_SCAN={"lock":threading.Lock(),"last":0.0,"found":0}
+PORT_SCAN_COOLDOWN=600
+def _tcp_open(port):
+    try:
+        s=socket.create_connection((IP,port),timeout=3); s.close(); return True
+    except Exception: return False
+def _game_auth_ok(port):
+    """이 포트에서 실제 로그인이 되는지. 성공 응답까지 봐야 게임서버다."""
+    try:
+        try: s=socket.create_connection((IP,port),timeout=6)
+        except Exception: s=socket.create_connection((HOST,port),timeout=6)
+    except Exception: return False
+    try:
+        s.settimeout(8)
+        s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC}))
+        env,body=rd(s)
+        return body.get("authentication_result")=="success"
+    except Exception: return False
+    finally:
+        try: s.close()
+        except Exception: pass
+def scan_game_port():
+    """이력에 있던 포트 → 20000~24000(50 간격, 실측값이 전부 100·500 단위) 순으로 훑는다."""
+    from concurrent.futures import ThreadPoolExecutor
+    cands=[p for p in (22000,21500,21400,21300) if p!=PORT]
+    cands+=[p for p in range(20000,24001,50) if p!=PORT and p not in cands]
+    opened=[]
+    with ThreadPoolExecutor(32) as ex:
+        for p,ok in zip(cands,ex.map(_tcp_open,cands)):
+            if ok: opened.append(p)
+    for p in opened:
+        if _game_auth_ok(p): return p
+    return None
+def auto_find_port():
+    """접속 실패 시 호출. 새 포트를 찾으면 PORT를 바꾸고 True."""
+    global PORT
+    if not PORT_SCAN["lock"].acquire(blocking=False): return False   # 다른 스레드가 스캔 중
+    try:
+        if time.time()-PORT_SCAN["last"]<PORT_SCAN_COOLDOWN: return False
+        PORT_SCAN["last"]=time.time()
+        print(f"[포트] {PORT} 접속 실패 — 자동 탐색 시작 (20000~24000)")
+        p=scan_game_port()
+        if p:
+            print(f"[포트] 게임서버 발견: {PORT} → {p} · 즉시 전환. ⚠️ Render 환경변수 RS_PORT도 {p}(으)로 바꿔둘 것(재배포하면 환경변수로 돌아간다)")
+            PORT=p; PORT_SCAN["found"]=int(time.time())
+            GAME_STATE.update(err=f"포트 자동전환 {p}",at=int(time.time()))
+            return True
+        print("[포트] 못 찾았다 — 게임서버가 내려가 있거나 20000~24000 밖")
+        return False
+    finally:
+        PORT_SCAN["lock"].release()
+
 def connect():
     # ⚠️ 여기서 실패하면 사이트는 멀쩡한데 데이터만 안 쌓인다. UptimeRobot은 /api/status가
     #    200이라 초록으로 보고한다(2026-08-04에 20시간 동안 못 알아챘다). 그래서 상태를 남긴다.
-    try:
-        try: s=socket.create_connection((HOST,PORT),timeout=10)
-        except Exception: s=socket.create_connection((IP,PORT),timeout=10)
-    except Exception as e:
-        GAME_STATE.update(ok=False,err=f"연결실패 {type(e).__name__} (포트 {PORT})",at=int(time.time()))
-        raise
+    for attempt in (1,2):
+        try:
+            try: s=socket.create_connection((HOST,PORT),timeout=10)
+            except Exception: s=socket.create_connection((IP,PORT),timeout=10)
+            break
+        except Exception as e:
+            GAME_STATE.update(ok=False,err=f"연결실패 {type(e).__name__} (포트 {PORT})",at=int(time.time()))
+            # 업데이트로 포트가 옮겨갔을 수 있다 — 한 번 찾아보고, 찾았으면 새 포트로 재시도
+            if attempt==1 and auto_find_port(): continue
+            raise
     # ⚠️ 인증 도중 터지면 소켓을 반드시 닫는다. 예전엔 여기서 예외가 나면 소켓이
     #    영영 안 닫혀서, 게임서버가 느릴 때마다 fd가 1개씩 새어 결국 서버가 접속을 못 받았다.
     try:
@@ -1181,6 +1245,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 "names":len(NAME_HIST),"renamed":HIST_STATE["n"],"hist_bytes":HIST_STATE["bytes"],
                 # 게임서버 접속 상태 — 웹서버가 살아있어도 여기가 죽으면 데이터가 안 쌓인다
                 "game":GAME_STATE["ok"],"game_err":GAME_STATE["err"],"game_port":PORT,
+                "port_auto":PORT_SCAN["found"] or None,   # 0이 아니면 자동 탐색으로 갈아탄 시각 — RS_PORT를 game_port 값으로 바꿔둘 것
+
                 "stale_min":int((time.time()-CACHE["last_refresh"])/60) if CACHE["last_refresh"] else None,
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
