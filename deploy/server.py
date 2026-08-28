@@ -981,6 +981,11 @@ def boot_refresh():
     30분을 그대로 보여줬다(프로 시즌 탭 배치도 옛날 것). 서버는 이미 떠 있으니 뒤에서 바로 채운다."""
     try: refresh_leaderboards()
     except Exception as e: print("[갱신] 부팅 갱신 오류:",e)
+    # 재배포 직후 목록의 닉네임은 씨앗(8/2) 것이다. Redis 이력으로 복원되지 않는 개명
+    # (사이트가 죽어 있던 사이 + 그 후의 개명)은 전원 재검사로만 잡힌다. 정기 검사는
+    # 2시간 뒤에야 처음 돌아서, 그때까지 "목록은 옛 닉네임, 클릭하면 새 닉네임"이 됐다.
+    try: sweep_names(harvest=False)
+    except Exception as e: print("[이름검사] 부팅 검사 오류:",e)
 
 def scheduler():
     while True:
@@ -1021,7 +1026,9 @@ def harvest_match_ids(s, mids):
         time.sleep(0.1)
     return noted, s
 
-def sweep_names():
+def sweep_names(harvest=True):
+    """전원 이름 재검사. harvest=False 면 경기 이름 수확을 건너뛴다(부팅 직후용 —
+    첫 수확은 경기 수만 건이라 무겁고, 지금 급한 건 목록의 닉네임뿐이다)."""
     ids=list(CACHE["players"].keys())
     if not ids: return
     print(f"[이름검사] {len(ids)}명 이름 수집...")
@@ -1054,10 +1061,11 @@ def sweep_names():
             time.sleep(1); s=connect(); continue
         time.sleep(0.1)
     noted=0
-    try:
-        noted,s=harvest_match_ids(s, match_ids)
-    except Exception as e:
-        print("[이름검사] 경기 수확 오류:",e)
+    if harvest:
+        try:
+            noted,s=harvest_match_ids(s, match_ids)
+        except Exception as e:
+            print("[이름검사] 경기 수확 오류:",e)
     s.close()
     with LOCK:
         for pid,rec in NAME_HIST.items():
