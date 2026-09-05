@@ -51,6 +51,7 @@ BLANK_HTML=('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
 # 발급: /api/guest?key=<MAINTENANCE_KEY>&hours=2  →  {"url": "...?guest=<만료>-<서명>"}
 # 링크의 서명은 MAINT_KEY에서 파생되므로 만료시각을 손으로 바꿔도 무효.
 # 만료가 지나면 링크를 다시 눌러도, 쿠키가 남아 있어도 서버가 거부한다 → 자동 차단.
+OG_PUBLIC={"/img/pass.png","/img/og.png","/img/favicon.svg"}   # 공유 카드용 — 점검 중에도 열려 있다
 def guest_sig(exp):
     return hashlib.sha256(f"rsgg-guest:{exp}:{MAINT_KEY}".encode()).hexdigest()[:20]
 def guest_ok(tok):
@@ -1189,6 +1190,9 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type",ctype)
         self.send_header("Access-Control-Allow-Origin","*")
         for k,v in (extra or []): self.send_header(k,v)
+        # 게스트 링크로 막 들어온 요청이면 이 응답에 출입증을 실어 보낸다(리다이렉트 없이)
+        ck=getattr(self,"_extra_cookie",None)
+        if ck: self.send_header("Set-Cookie",ck)
         if cache: self.send_header("Cache-Control",cache)
         self.end_headers()
         if getattr(self,"_head_only",False): return      # HEAD는 헤더까지만
@@ -1207,7 +1211,8 @@ class H(http.server.BaseHTTPRequestHandler):
         return ("rsgg_preview="+MAINT_KEY) in ck
 
     def maint_ok(self):
-        """점검 모드를 통과할 수 있는가 (관리자 미리보기 또는 유효한 게스트 쿠키)."""
+        """점검 모드를 통과할 수 있는가 (관리자 미리보기 · 유효한 게스트 쿠키 · 이번 요청의 게스트 링크)."""
+        if getattr(self,"_guest_exp",0): return True   # ?guest=<유효> 로 방금 들어온 요청
         if not MAINT_KEY: return False
         ck=self.headers.get("Cookie") or ""
         if ("rsgg_preview="+MAINT_KEY) in ck: return True
@@ -1226,9 +1231,12 @@ class H(http.server.BaseHTTPRequestHandler):
         g=qs.get("guest",[""])[0]
         if g and guest_ok(g):
             exp=int(g.split("-")[0])
-            self.send_response(302)
-            self.send_header("Set-Cookie",f"rsgg_guest={g}; Path=/; Max-Age={max(1,exp-int(time.time()))}; SameSite=Lax")
-            self.send_header("Location",path or "/"); self.end_headers(); return
+            # ⚠️ 예전엔 302로 되돌려보냈다. 그러면 **카톡·디스코드의 미리보기 봇**이 쿠키를
+            #    안 들고 리다이렉트를 따라가서 점검용 빈 화면을 받는다 → 공유 카드가 안 뜬다.
+            #    쿠키를 심으면서 **그 자리에서 페이지를 준다**(리다이렉트 없음).
+            self._guest_exp=exp
+            self._extra_cookie=f"rsgg_guest={g}; Path=/; Max-Age={max(1,exp-int(time.time()))}; SameSite=Lax"
+            path="/"      # 아래 정적 서빙으로 그대로 흘려보낸다(점검 게이트는 maint_ok가 통과시킨다)
         # 게스트 링크 발급 (관리자 전용 — 키가 틀리면 존재 자체를 숨긴다)
         if path=="/api/guest":
             if not (MAINT_KEY and qs.get("key",[""])[0]==MAINT_KEY):
@@ -1243,7 +1251,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 "expires_kst":time.strftime("%Y-%m-%d %H:%M",time.gmtime(exp+9*3600))},ensure_ascii=False))
         # 점검 중: /api/status 만 열어두고(서버가 잠들지 않게) 나머지는 안내 페이지
         # (MAINT_BLANK=1 이면 안내 페이지 대신 빈 화면 — 로고·문구조차 안 보인다)
-        if MAINTENANCE and path!="/api/status" and not self.maint_ok():
+        # ⚠️ 공유 카드 이미지는 점검 중에도 열어둔다. 카톡 미리보기 봇은 og:image를
+        #    **쿠키 없이 따로** 받아 간다 — 막으면 카드에 그림이 안 뜬다(링크만 덩그러니).
+        #    보여주려고 만든 그림이라 공개돼도 잃을 게 없다.
+        if MAINTENANCE and path!="/api/status" and path not in OG_PUBLIC and not self.maint_ok():
             if MAINT_BLANK: return self._send(404,BLANK_HTML,"text/html","no-store")
             return self._send(503,MAINT_HTML,"text/html","no-store")
         if path=="/api/status":
@@ -1375,6 +1386,23 @@ class H(http.server.BaseHTTPRequestHandler):
             host=self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
             proto=self.headers.get("X-Forwarded-Proto") or ("https" if ":443" in host else "http")
             if host: data=data.replace(b"__SITE_URL__",(proto+"://"+host.split(",")[0].strip()).encode())
+            # 게스트 링크로 들어온 주소는 **공유 카드(OG)를 '이용권'으로** 바꿔 준다.
+            # 카톡·디스코드의 미리보기 봇이 이 주소를 긁어 큰 카드를 만들고, 누르면 바로 입장한다.
+            # ⚠️ 만료 시각은 링크마다 달라 그림에 못 박는다 → 그림은 고정(img/pass.png),
+            #    시각은 설명글에 여기서 넣는다.
+            gexp=getattr(self,"_guest_exp",0)
+            if gexp:
+                left=max(0,gexp-int(time.time()))
+                when=time.strftime("%m/%d %H:%M",time.gmtime(gexp+9*3600))   # KST 고정 표기
+                title="RS.GG 스탯사이트 이용권"
+                desc=(f"{when}(KST)까지 열람할 수 있습니다 · 남은 시간 "
+                      f"{left//3600}시간 {left%3600//60}분 · 눌러서 입장")
+                def _meta(prop,val,buf):
+                    return re.sub(('(<meta property="%s" content=")[^"]*(">)'%prop).encode(),
+                                  lambda m: m.group(1)+val.encode()+m.group(2), buf, count=1)
+                data=_meta("og:title",title,data)
+                data=_meta("og:description",desc,data)
+                data=data.replace(b"/img/og.png",b"/img/pass.png")
             # 관리자 전용 화면은 **관리자에게만 끼워 넣는다.** 남이 받는 index.html에는
             # 코드가 한 글자도 안 들어가서 소스를 봐도 그런 메뉴가 있는 줄 모른다.
             # ⚠️ admin.js는 ALLOWED에 없다 → /admin.js 로 직접 받아갈 수 없다.
