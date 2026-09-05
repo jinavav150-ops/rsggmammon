@@ -113,6 +113,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
 .stat .k{font-size:12px;color:var(--mut)}
 .stat .v{font-size:20px;font-weight:800;margin-top:3px}
+.rnchip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 2px 0;color:var(--acc2);font-weight:600}
 .sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sect-t>.ic{flex:none}
 #matchInfo{flex:1 1 auto;min-width:0}
@@ -298,7 +299,7 @@ window.setSeason=v=>{
   curSeason=v; B=SD().boards; BM=SD().board_meta;
   try{localStorage.setItem('rsgg_season',v);}catch(e){}
   // 고른 시즌에 없는 보드를 보고 있었으면 프로/캐주얼로 되돌린다
-  if(curBoard!=='comps' && curBoard!=='tiers' && !B[curBoard]){
+  if(!SEASONLESS.includes(curBoard) && !B[curBoard]){
     curBoard = B['pro']?'pro':'casual';
     location.hash='#/board/'+encodeURIComponent(curBoard);   // 해시도 맞춰야 render()가 안 되돌린다
   }
@@ -404,6 +405,7 @@ function tabsHtml(){
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
   if(hasTiers()) h+=`<div class="tab ${curBoard==='tiers'?'on':''}" onclick="goBoard('tiers')">${t('tab_tiers')}</div>`;
   if(hasComps()) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
+  h+=`<div class="tab ${curBoard==='renamed'?'on':''}" onclick="goBoard('renamed')">${t('tab_renamed')}</div>`;
   h+=`<select class="tab hero ${SD().hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
   for(const hl of SD().hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
@@ -434,7 +436,7 @@ window.onRegionChange=el=>{
 // 티어·조합·특성 통계는 heroes.json / comps.json / perks.json에서 오는데
 // **시즌 구분이 없다**(전체 수집 기간 집계). 그런데 헤더의 시즌 선택기는 계속 보여서
 // "시즌을 바꿨는데 숫자가 그대로"라는 오해를 산다. 그 탭에선 선택기를 잠근다.
-const SEASONLESS=['tiers','comps'];
+const SEASONLESS=['tiers','comps','renamed'];
 function syncSeasonSel(){
   const sel=document.getElementById('seasonSel'); if(!sel) return;
   const off=SEASONLESS.includes(curBoard);
@@ -979,6 +981,54 @@ function goPlayer(id){goHash('#/player/'+id);}
 function doSearch(){const q=document.getElementById('q').value.trim();if(q)goHash('#/search/'+encodeURIComponent(q));}
 document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
 
+
+// ── 개명 이력 ─────────────────────────────────────────
+// 서버(/api/renamed)가 닉네임 이력을 통째로 준다. 프로필의 '이전 닉네임'과 같은 데이터를
+// 목록으로 모아 본 것 — 누가 언제 이름을 바꿨는지 한 화면에서 본다.
+// ⚠️ 시즌과 무관한 화면이다(SEASONLESS). 한 번 받으면 캐시해 두고 지역 필터만 다시 그린다.
+let rnCache=null, rnRg='';
+const RN_GROUPS=[['ap','ap-northeast-2'],['eu','eu-central-1'],['us','us-east-1']];
+function rnGroup(r){r=String(r||'');for(const g of RN_GROUPS) if(r.indexOf(g[0]+'-')===0) return g[0];return 'etc';}
+function rnLabel(k){const g=RN_GROUPS.find(x=>x[0]===k);return g?regionName(g[1]):t('rg_etc');}
+function rnAgo(ts){if(!ts)return'';const s=Math.floor(Date.now()/1000-ts);
+  if(s<3600)return t('ago_min',{n:Math.floor(s/60)});
+  if(s<86400)return t('ago_hour',{n:Math.floor(s/3600)});
+  return t('ago_day',{n:Math.floor(s/86400)});}
+window.goRenamedRg=k=>{rnRg=k;paintRenamed();};
+function renderRenamed(){
+  if(rnCache) return paintRenamed();
+  app.innerHTML=tabsHtml()+`<div class="card"><div class="empty">${t('loading')}</div></div>`;
+  fetch('/api/renamed').then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+    .then(j=>{rnCache=j; if(curBoard==='renamed') paintRenamed();})
+    .catch(e=>{ if(curBoard!=='renamed') return;
+      app.innerHTML=tabsHtml()+`<div class="card"><div class="empty">${t('rn_fail')} (${esc(String(e.message||e))})</div></div>`;});
+}
+function paintRenamed(){
+  const all=(rnCache&&rnCache.players)||[];
+  const cnt={}; for(const p of all){const g=rnGroup(p.r); cnt[g]=(cnt[g]||0)+1;}
+  if(rnRg&&!cnt[rnRg]) rnRg='';
+  const rows=rnRg?all.filter(p=>rnGroup(p.r)===rnRg):all;
+  let h=tabsHtml();
+  const btns=[{k:'',label:t('all_regions'),n:all.length}];
+  for(const g of RN_GROUPS) if(cnt[g[0]]) btns.push({k:g[0],label:rnLabel(g[0]),n:cnt[g[0]]});
+  if(cnt.etc) btns.push({k:'etc',label:t('rg_etc'),n:cnt.etc});
+  h+='<div class="tabs" style="margin-top:10px">'+btns.map(b=>
+    `<div class="tab ${rnRg===b.k?'on':''}" onclick="goRenamedRg('${b.k}')">${esc(b.label)} <span style="font-size:11px;opacity:.7">${b.n.toLocaleString()}</span></div>`).join('')+'</div>';
+  h+=`<div class="sect-t">${t('rn_title')}<span class="muted" style="font-size:12px;font-weight:400">${t('total_n',{n:rows.length.toLocaleString()})}`
+    +`${(rnCache&&rnCache.names)?' · '+t('rn_tracked',{n:rnCache.names.toLocaleString()}):''}</span></div>`;
+  h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th>${t('rn_cur')}</th><th>${t('prev_names')}</th>`
+    +`<th class="num">${t('rn_times')}</th><th class="hcol">${t('sr_region')}</th><th class="hcol">${t('rn_last')}</th></tr></thead><tbody>`;
+  if(!rows.length) h+=`<tr><td colspan="5" class="empty">${t('rn_none')}</td></tr>`;
+  for(const p of rows){
+    const chips=(p.prev||[]).map(pn=>`<span class="rnchip">${esc(pn)}</span>`).join('');
+    h+=`<tr ${p.id?`onclick="goPlayer('${p.id}')" style="cursor:pointer"`:''}>`
+      +`<td><span class="name">${esc(p.n||'')}</span></td><td style="font-size:12px">${chips}</td>`
+      +`<td class="num">${(p.prev||[]).length}</td><td class="muted hcol">${esc(regionName(p.r))}</td>`
+      +`<td class="muted hcol" style="font-size:12px">${rnAgo(p.ts)}</td></tr>`;
+  }
+  app.innerHTML=h+'</tbody></table></div>';
+}
+
 function render(){
   hidePerkTip();
   // ⚠️ 잘린 퍼센트 인코딩(#/search/%)이면 decodeURIComponent가 던진다. 그러면 이 화면 전환이 통째로 무시된다.
@@ -990,6 +1040,7 @@ function render(){
   syncSeasonSel();
   if(curBoard==='tiers') return renderTiers();
   if(curBoard==='comps') return renderComps();
+  if(curBoard==='renamed') return renderRenamed();
   if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
   renderBoard();
 }

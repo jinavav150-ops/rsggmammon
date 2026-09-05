@@ -1259,10 +1259,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"]}
             return self._send(200,json.dumps(st))
         if path=="/api/renamed":
-            # 관리자 전용 — 개명한 유저 전체 목록.
-            # ⚠️ 권한 없으면 403이 아니라 **404**를 준다. 있다는 사실 자체를 숨기려는 것
-            #    (403이면 "여기 뭔가 있다"는 신호가 된다).
-            if not self.admin_ok(): return self._send(404,"not found","text/plain")
+            # 개명한 유저 전체 목록. 2026-09-05부터 **사이트 이용자 누구나** 볼 수 있다
+            # (프로필의 '이전 닉네임'과 같은 데이터를 목록으로 모은 것뿐이다).
+            # ⚠️ 점검 모드 게이트는 아래 maint_ok 검사가 이미 막는다 — 이 라우트가
+            #    그 검사보다 **아래**에 있어야 한다는 뜻이다. 위로 옮기지 말 것.
+            # ⚠️ hist_bytes(Upstash 저장 크기)는 운영 지표라 관리자에게만 준다.
+            adm=self.admin_ok()
             out=[]
             with LOCK:
                 for pid,rec in NAME_HIST.items():
@@ -1271,7 +1273,8 @@ class H(http.server.BaseHTTPRequestHandler):
                     p=CACHE["players"].get(pid,{})
                     out.append({"id":pid,"n":rec.get("cur") or p.get("n",""),"prev":list(prev),
                                 "r":p.get("r",""),"lv":p.get("lv"),"wr":p.get("wr"),"ts":rec.get("ts")})
-                st={"names":len(NAME_HIST),"hist_bytes":HIST_STATE["bytes"]}
+                st={"names":len(NAME_HIST)}
+                if adm: st["hist_bytes"]=HIST_STATE["bytes"]
             # 최근에 바꾼 사람 먼저, 시각을 모르면(옛 기록·경기에서 주운 이름) 뒤로
             out.sort(key=lambda x:(-(x["ts"] or 0), -len(x["prev"])))
             return self._send(200,json.dumps({"players":out,**st},ensure_ascii=False),
