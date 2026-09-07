@@ -114,6 +114,17 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .stat .k{font-size:12px;color:var(--mut)}
 .stat .v{font-size:20px;font-weight:800;margin-top:3px}
 .rnchip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px 8px;margin:2px 4px 2px 0;color:var(--acc2);font-weight:600}
+.dgrid{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.dcard{flex:1 1 150px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+.dcard.hero{flex:1 1 100%;display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
+.dbig{font-size:38px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.dmid{font-size:24px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
+.dlab{font-size:12px;color:var(--mut);margin-bottom:6px}
+.ddelta{font-size:12px;font-weight:700} .ddelta.up{color:var(--win)} .ddelta.dn{color:var(--lose)}
+.dbar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:8px}
+.dbar>i{display:block;height:100%;background:var(--acc);border-radius:3px}
+.dtab td,.dtab th{font-variant-numeric:tabular-nums} .dtab tr.today td{font-weight:800}
+.dnote{font-size:11.5px;color:var(--mut);line-height:1.6;margin:2px 4px 12px}
 .sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sect-t>.ic{flex:none}
 #matchInfo{flex:1 1 auto;min-width:0}
@@ -406,6 +417,7 @@ function tabsHtml(){
   if(hasTiers()) h+=`<div class="tab ${curBoard==='tiers'?'on':''}" onclick="goBoard('tiers')">${t('tab_tiers')}</div>`;
   if(hasComps()) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
   h+=`<div class="tab ${curBoard==='renamed'?'on':''}" onclick="goBoard('renamed')">${t('tab_renamed')}</div>`;
+  h+=`<div class="tab ${curBoard==='dau'?'on':''}" onclick="goBoard('dau')">${t('tab_dau')}</div>`;
   h+=`<select class="tab hero ${SD().hero_labels.includes(curBoard)?'on':''}" onchange="goBoard(this.value)" style="min-width:120px">`;
   h+=`<option value="">${t('tab_hero')}▾</option>`;
   for(const hl of SD().hero_labels) h+=`<option value="${hl}" ${curBoard===hl?'selected':''}>${hk(hl)}</option>`;
@@ -436,7 +448,7 @@ window.onRegionChange=el=>{
 // 티어·조합·특성 통계는 heroes.json / comps.json / perks.json에서 오는데
 // **시즌 구분이 없다**(전체 수집 기간 집계). 그런데 헤더의 시즌 선택기는 계속 보여서
 // "시즌을 바꿨는데 숫자가 그대로"라는 오해를 산다. 그 탭에선 선택기를 잠근다.
-const SEASONLESS=['tiers','comps','renamed'];
+const SEASONLESS=['tiers','comps','renamed','dau'];
 function syncSeasonSel(){
   const sel=document.getElementById('seasonSel'); if(!sel) return;
   const off=SEASONLESS.includes(curBoard);
@@ -1029,6 +1041,67 @@ function paintRenamed(){
   app.innerHTML=h+'</tbody></table></div>';
 }
 
+
+// ── 접속자: 오늘 하루 게임에 접속한 유저 (서버별) ──────────────────
+// 서버(/api/dau)가 게임 프로필의 마지막 접속일을 모아 날짜별·서버별로 세어 준다.
+// ⚠️ 게임 기준 하루는 KST 09:00에 바뀌고, 랭킹에 오른 유저만 센다. 둘 다 화면에 적는다.
+let dauCache=null;
+function renderDau(){
+  if(dauCache) return paintDau();
+  app.innerHTML=tabsHtml()+`<div class="card"><div class="empty">${t('loading')}</div></div>`;
+  fetch('/api/dau').then(r=>{if(!r.ok)throw new Error(r.status);return r.json();})
+    .then(j=>{dauCache=j; if(curBoard==='dau') paintDau();})
+    .catch(e=>{ if(curBoard!=='dau') return;
+      app.innerHTML=tabsHtml()+`<div class="card"><div class="empty">${t('rn_fail')} (${esc(String(e.message||e))})</div></div>`;});
+}
+function dauDay(label){   // "YYYY-MM-DD" → "9/7 (일)"
+  const d=new Date(label+'T12:00:00'); if(isNaN(d)) return label;
+  let wd=''; try{ wd=d.toLocaleDateString(LANG==='zh-TW'?'zh-TW':LANG,{weekday:'short'}); }catch(e){}
+  return `${d.getMonth()+1}/${d.getDate()}${wd?' ('+wd+')':''}`;
+}
+function dauDelta(a,b){const d=(a||0)-(b||0); if(!d) return `<span class="ddelta">±0</span>`;
+  return `<span class="ddelta ${d>0?'up':'dn'}">${d>0?'▲':'▼'}${Math.abs(d).toLocaleString()}</span>`;}
+function paintDau(){
+  const j=dauCache, days=j.days||[], regs=j.regions||[];
+  const today=days[0]||{total:0,regions:{}}, yday=days[1]||{total:0,regions:{}};
+  // 어제가 집계 시작 전(하한값)이면 '어제 대비'는 의미가 없다 — 비교 자체를 숨긴다
+  const ydayOk=!(j.since&&yday.day&&yday.day<j.since);
+  const delta=(a,b)=>ydayOk?dauDelta(a,b):`<span class="ddelta muted">—</span>`;
+  let h=tabsHtml();
+  h+=`<div class="sect-t">${t('dau_title')}<span class="muted" style="font-size:12px;font-weight:400">${dauDay(today.day)} · ${t('dau_reset',{t:j.reset_kst||'09:00'})}</span></div>`;
+  // 오늘 총원
+  h+=`<div class="dgrid"><div class="dcard hero"><div><div class="dlab">${t('dau_total')}</div><div class="dbig">${(today.total||0).toLocaleString()}</div></div>`
+    +`<div><div class="dlab">${t('dau_vs_yday')}${ydayOk?' ('+(yday.total||0).toLocaleString()+')':''}</div><div class="dmid">${delta(today.total,yday.total)}</div></div>`
+    +`<div style="margin-left:auto;text-align:right"><div class="dlab">${t('dau_updated')}</div><div class="muted" style="font-size:13px">${j.updated?timeAgo(j.updated):'-'}</div></div></div></div>`;
+  // 서버별 카드
+  const max=Math.max(1,...regs.map(r=>today.regions[r]||0));
+  h+=`<div class="sect-t" style="margin-top:6px">${t('dau_by_server')}</div><div class="dgrid">`;
+  for(const r of regs){
+    const n=today.regions[r]||0, pct=today.total?Math.round(n/today.total*100):0;
+    h+=`<div class="dcard"><div class="dlab">${esc(regionName(r)||r)}</div><div class="dmid">${n.toLocaleString()} <span class="muted" style="font-size:12px;font-weight:400">${pct}%</span></div>`
+      +`<div style="margin-top:4px">${delta(n,yday.regions[r])}</div><div class="dbar"><i style="width:${Math.round(n/max*100)}%"></i></div></div>`;
+  }
+  h+='</div>';
+  // 최근 14일 표
+  const rows=days.slice(0,14);
+  h+=`<div class="sect-t">${t('dau_recent',{n:rows.length})}</div><div class="card" style="overflow-x:auto"><table class="dtab"><thead><tr><th>${t('dau_day')}</th><th class="num">${t('dau_total')}</th>`;
+  for(const r of regs) h+=`<th class="num">${esc(regionName(r)||r)}</th>`;
+  h+='</tr></thead><tbody>';
+  if(!rows.length) h+=`<tr><td colspan="${regs.length+2}" class="empty">${t('no_result')}</td></tr>`;
+  let partial=false;
+  rows.forEach((d,i)=>{
+    const lb=!!(j.since&&d.day<j.since); if(lb) partial=true;   // 집계 시작 전 = 하한값
+    const f=v=>(lb?'≥ ':'')+(v||0).toLocaleString();
+    h+=`<tr class="${i===0?'today':''}${lb?' muted':''}"><td>${dauDay(d.day)}</td><td class="num">${f(d.total)}</td>`;
+    for(const r of regs) h+=`<td class="num">${f(d.regions[r])}</td>`;
+    h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  h+=`<div class="dnote">${t('dau_note',{n:(j.tracked||0).toLocaleString(),h:j.interval_h||2})}`
+    +(partial?`<br>${t('dau_partial',{d:dauDay(j.since)})}`:'')+`</div>`;
+  app.innerHTML=h;
+}
+
 function render(){
   hidePerkTip();
   // ⚠️ 잘린 퍼센트 인코딩(#/search/%)이면 decodeURIComponent가 던진다. 그러면 이 화면 전환이 통째로 무시된다.
@@ -1041,6 +1114,7 @@ function render(){
   if(curBoard==='tiers') return renderTiers();
   if(curBoard==='comps') return renderComps();
   if(curBoard==='renamed') return renderRenamed();
+  if(curBoard==='dau') return renderDau();
   if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
   renderBoard();
 }
