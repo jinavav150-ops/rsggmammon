@@ -706,6 +706,7 @@ def load_disk():
     hist_seed()
     rank_load()
     dau_load()
+    magg_load(); magg_apply()          # 저장된 30일 집계가 있으면 부팅 즉시 최신 조합으로
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]:
@@ -1091,7 +1092,8 @@ def boot_refresh():
     # 재배포 직후 목록의 닉네임은 씨앗(8/2) 것이다. Redis 이력으로 복원되지 않는 개명
     # (사이트가 죽어 있던 사이 + 그 후의 개명)은 전원 재검사로만 잡힌다. 정기 검사는
     # 2시간 뒤에야 처음 돌아서, 그때까지 "목록은 옛 닉네임, 클릭하면 새 닉네임"이 됐다.
-    try: sweep_names(harvest=False)
+    # 조합 집계 저장분이 모자라면(첫 배포) 부팅 검사에서 경기까지 받아 바로 채운다. 아니면 가볍게.
+    try: sweep_names(harvest=(magg_total()<MAGG_MIN))
     except Exception as e: print("[이름검사] 부팅 검사 오류:",e)
 
 def scheduler():
@@ -1099,6 +1101,291 @@ def scheduler():
         time.sleep(LB_REFRESH_SEC)
         try: refresh_leaderboards()
         except Exception as e: print("[갱신] 오류:",e)
+
+# ── 조합·티어·특성 자동 집계 (최근 30일) ─────────────────────────
+# 예전엔 capture/ 배치(collect_matches → build_heroes · build_perks)를 로컬에서 돌려 올려야 바뀌었고,
+# 2026-08-02 이후 두 달 동안 한 번도 안 돌아 그대로 멈춰 있었다.
+# 그런데 2시간 이름검사(harvest_match_ids)가 이미 전 유저의 최근 경기 결과를 받고 있었다 —
+# 닉네임만 꺼내고 나머지를 버렸을 뿐이다. 그걸 버리지 않고 여기서 센다 → **게임서버 요청 추가 0건.**
+#   · 경기 하나 → 배치와 **똑같은** 행 [타입, 이긴조합, 진조합, 시각, 봇수, 맵, 사람들] (magg_row)
+#   · 경기 날짜(KST)별로 **더할 수 있는 카운터**만 쌓는다. 원본 행은 안 들고 있는다(30일치면 수백 MB).
+#   · 화면용 표는 최근 30일 카운터를 합쳐 배치와 같은 규칙(표본 기준·정렬·반올림)으로 만든다.
+#   · 같은 경기를 두 번 세지 않게 날짜별로 센 경기 ID를 보관한다(Redis — 재배포해도 남는다).
+# ⚠️ 표 만드는 규칙을 바꾸면 capture/build_*.py 결과와 달라진다.
+#    2026-09-26 matches_raw.json 7.5만 경기로 배치 결과(comps/heroes/perks.json)와 대조해 일치를 확인했다.
+import itertools
+MAGG_DAYS=int(os.environ.get("MAGG_DAYS","30"))
+MAGG_MIN=int(os.environ.get("MAGG_MIN","2000"))    # 30일 합계가 이보다 적으면 옛 파일을 그대로 보여준다
+MAGG_KEY="rsgg:magg:"
+MAGG_FILE=os.path.join(DATA,"magg.json")
+MAGG={"days":{},"ids":{},"dirty":set(),"drop":set(),"built":0,"applied":False}
+MAGG_LOCK=threading.Lock()
+# 배치와 같은 표본 기준 (capture/collect_matches.py · build_heroes.py · build_perks.py)
+_CMP_STEPS=[20,15,10,5]; _CMP_KEEP=20
+_DUO_STEPS=[50,20,10,5]; _DUO_KEEP=30
+_CNT_STEPS=[50,20,10,5]; _CNT_KEEP=80
+_BLD_STEPS=[200,100,50,30,20]; _BLD_KEEP=40; _SLOT_MIN=20
+_SPLITS=("pro_human","pro_bot","casual_human","casual_bot")
+
+def _magg_is_bot(p):
+    """collect_matches.is_bot 과 같다 — BotArchetype 이 있거나 PlayerId 가 bot_ 으로 시작."""
+    if str(p.get("BotArchetype") or "").strip(): return True
+    pid=p.get("PlayerId") or ""
+    return isinstance(pid,str) and pid.startswith("bot_")
+
+def magg_row(m):
+    """경기 JSON → 배치(collect_matches.parse_match)와 같은 행. 3대3이 아니거나 모르는 캐릭터면 None."""
+    prs=m.get("PlayerResults") or []
+    win=m.get("WinnerTeam")
+    if win not in (1,2): return None
+    teams={1:[],2:[]}; bots=0; humans=[]
+    for p in prs:
+        tm=p.get("Team")
+        if tm not in (1,2): return None
+        h=HEROES.get(str(p.get("LastUsedHeroId")))
+        if not h: return None
+        teams[tm].append(h)
+        if _magg_is_bot(p): bots+=1
+        else:
+            perks=[]
+            for hr in (p.get("HeroResultData") or []):
+                if str(hr.get("HeroId"))==str(p.get("LastUsedHeroId")):
+                    perks=[int(x) for x in (hr.get("Perks") or [])]; break
+            if perks: humans.append([h,perks,1 if tm==win else 0])
+    if len(teams[1])!=3 or len(teams[2])!=3: return None
+    lose=2 if win==1 else 1
+    return [m.get("MatchType"),"+".join(sorted(teams[win])),"+".join(sorted(teams[lose])),
+            m.get("Timestamp"),bots,m.get("LevelId"),humans]
+
+def _split_of(r):
+    mk={1:"pro",2:"casual"}.get(r[0])
+    return f"{mk}_{'bot' if (r[4] or 0)>0 else 'human'}" if mk else None
+
+def _perk_slot(pid):
+    v=PERK_KR.get(str(pid))
+    return v[3] if isinstance(v,list) and len(v)>3 else None
+
+def _new_split(): return {"t":0,"c":{},"hw":{},"hn":{},"dw":{},"dn":{},"cw":{},"cn":{},"pk":0,"ph":{},"ps":{},"pn":{},"pb":{}}
+def _inc(d,k,v=1): d[k]=d.get(k,0)+v
+def _add2(d,k,a,b):
+    x=d.get(k)
+    if x is None: d[k]=[a,b]
+    else: x[0]+=a; x[1]+=b
+
+def _magg_count(S,r):
+    """행 하나를 카운터에 더한다. 세 배치의 aggregate() 앞부분(세기)과 1:1로 대응한다."""
+    W=r[1].split("+"); L=r[2].split("+")
+    S["t"]+=1
+    _add2(S["c"],r[1],1,0); _add2(S["c"],r[2],0,1)                         # 조합 [승, 패]
+    for h in W: _inc(S["hw"],h); _inc(S["hn"],h)                             # 캐릭터
+    for h in L: _inc(S["hn"],h)
+    for a,b in itertools.combinations(sorted(W),2): k=a+"+"+b; _inc(S["dw"],k); _inc(S["dn"],k)   # 듀오
+    for a,b in itertools.combinations(sorted(L),2): _inc(S["dn"],a+"+"+b)
+    for a in W:                                                              # 상성 (a 가 b 를 이김)
+        for b in L:
+            if a==b: continue
+            _inc(S["cw"],a+">"+b); _inc(S["cn"],a+">"+b); _inc(S["cn"],b+">"+a)
+    for hero,perks,won in (r[6] if len(r)>6 and r[6] else []):              # 특성 — 사람만
+        S["pk"]+=1; _inc(S["ph"],hero)
+        byslot={}
+        for pid in perks:
+            s=_perk_slot(pid)
+            if s is None: continue
+            byslot[s]=pid
+            _add2(S["ps"],f"{hero}|{s}|{pid}",1,won); _inc(S["pn"],f"{hero}|{s}")
+        if len(byslot)==4:
+            _add2(S["pb"],hero+"|"+"-".join(str(byslot[s]) for s in range(4)),1,won)
+
+def _magg_cutoff(): return kst_day(time.time()-(MAGG_DAYS-1)*86400)
+
+def magg_add(m):
+    """이름검사가 받은 경기 하나를 센다. 새로 셌으면 True. (창 밖·중복·못 읽는 경기는 False)"""
+    mid=str(m.get("MatchId") or ""); ts=m.get("Timestamp")
+    if not mid or not isinstance(ts,(int,float)): return False
+    day=kst_day(ts)
+    if day<_magg_cutoff() or day>kst_day(time.time()+86400): return False   # 창 밖 · 시계 틀린 미래 경기
+    r=magg_row(m)
+    if not r: return False
+    sk=_split_of(r)
+    with MAGG_LOCK:
+        ids=MAGG["ids"].setdefault(day,set())
+        if mid in ids: return False
+        ids.add(mid)
+        D=MAGG["days"].setdefault(day,{"n":0,"s":{}})
+        D["n"]+=1
+        if sk: _magg_count(D["s"].setdefault(sk,_new_split()),r)
+        MAGG["dirty"].add(day)
+    return True
+
+def _pick(counts,steps,keep):
+    for s in steps:
+        if sum(1 for n in counts if n>=s)>=keep: return s
+    return steps[-1]
+
+def _merge(dst,src):
+    for k,v in src.items():
+        if not isinstance(v,dict): dst[k]=dst.get(k,0)+v; continue
+        D=dst.setdefault(k,{})
+        for kk,vv in v.items():
+            if isinstance(vv,list):
+                x=D.get(kk)
+                if x is None: D[kk]=list(vv)
+                else: x[0]+=vv[0]; x[1]+=vv[1]
+            else: D[kk]=D.get(kk,0)+vv
+
+def _tbl_comps(S):          # = collect_matches.aggregate
+    tally=S.get("c",{}); total=S.get("t",0)
+    thr=_CMP_STEPS[-1]
+    for cand in _CMP_STEPS:
+        if sum(1 for w,l in tally.values() if w+l>=cand)>=_CMP_KEEP: thr=cand; break
+    rows=[]
+    for comp,(w,l) in tally.items():
+        n=w+l
+        if n<thr: continue
+        rows.append([comp,n,w,round(w/n*100,1),round(n/(total*2)*100,2) if total else 0])
+    rows.sort(key=lambda x:(-x[3],-x[1]))
+    return {"matches":total,"comps":rows,"min_games":thr}
+
+def _tbl_heroes(S):         # = build_heroes.aggregate
+    total=S.get("t",0)
+    if not total: return None
+    hw,hn=S.get("hw",{}),S.get("hn",{})
+    hero_rows=[[h,n,hw.get(h,0),round(hw.get(h,0)/n*100,1),round(n/(total*6)*100,1)] for h,n in hn.items()]
+    hero_rows.sort(key=lambda x:-x[3])
+    dw,dn=S.get("dw",{}),S.get("dn",{})
+    dthr=_pick(list(dn.values()),_DUO_STEPS,_DUO_KEEP)
+    duos=[[p,n,dw.get(p,0),round(dw.get(p,0)/n*100,1),round(n/(total*2)*100,2)] for p,n in dn.items() if n>=dthr]
+    duos.sort(key=lambda x:-x[3])
+    cw,cn=S.get("cw",{}),S.get("cn",{})
+    cthr=_pick(list(cn.values()),_CNT_STEPS,_CNT_KEEP)
+    counters={}
+    for k,n in cn.items():
+        if n<cthr: continue
+        a,b=k.split(">",1)
+        counters.setdefault(a,{})[b]=[n,round(cw.get(k,0)/n*100,1)]
+    return {"matches":total,"heroes":hero_rows,"duos":duos,"counters":counters,"min_duo":dthr,"min_counter":cthr}
+
+def _tbl_perks(S):          # = build_perks.aggregate
+    picks=S.get("pk",0)
+    if not picks: return None
+    ps,pn,pb,ph=S.get("ps",{}),S.get("pn",{}),S.get("pb",{}),S.get("ph",{})
+    thr=_BLD_STEPS[-1]
+    for cand in _BLD_STEPS:
+        if sum(1 for n,_w in pb.values() if n>=cand)>=_BLD_KEEP: thr=cand; break
+    by_hs={}
+    for k,(n,w) in ps.items():
+        h,s,pid=k.split("|"); by_hs.setdefault((h,int(s)),[]).append((int(pid),n,w))
+    by_hb={}
+    for k,(n,w) in pb.items():
+        h,key=k.split("|",1); by_hb.setdefault(h,[]).append((key,n,w))
+    heroes={}
+    for hero,hcnt in ph.items():
+        slots=[]
+        for s in range(4):
+            tot=pn.get(f"{hero}|{s}",0)
+            opts=[[pid,n,w,round(w/n*100,1),round(n/tot*100,1) if tot else 0]
+                  for pid,n,w in by_hs.get((hero,s),[]) if n>=_SLOT_MIN]
+            opts.sort(key=lambda x:-x[3]); slots.append(opts)
+        tb=sum(n for _k,n,_w in by_hb.get(hero,[])) or 1
+        builds=[[key,n,w,round(w/n*100,1),round(n/tb*100,1)] for key,n,w in by_hb.get(hero,[]) if n>=thr]
+        builds.sort(key=lambda x:-x[3])
+        if any(len(o) for o in slots) or builds: heroes[hero]={"n":hcnt,"slots":slots,"builds":builds}
+    return {"picks":picks,"min_build":thr,"heroes":heroes}
+
+def magg_tables():
+    """최근 30일 카운터 → (comps, hstat, pstat). 형식은 배치가 만들던 json 과 같다(+auto 표시)."""
+    cut=_magg_cutoff()
+    with MAGG_LOCK:
+        days=sorted(d for d in MAGG["days"] if d>=cut)
+        tot={k:_new_split() for k in _SPLITS}; n_all=0
+        for d in days:
+            D=MAGG["days"][d]; n_all+=D.get("n",0)
+            for k,S in D.get("s",{}).items():
+                if k in tot: _merge(tot[k],S)
+    now=int(time.time())
+    meta={"auto":True,"days":MAGG_DAYS,"built_at":now}
+    fr,to=(days[0],days[-1]) if days else ("","")
+    comps={k:_tbl_comps(tot[k]) for k in _SPLITS}
+    comps.update(min_games=_CMP_STEPS[0],season=(CACHE.get("seasons") or [""])[0],**meta)
+    hstat={"from":fr,"to":to,"total":n_all,**meta}
+    pstat={"from":fr,"to":to,**meta}
+    for k in _SPLITS:
+        h=_tbl_heroes(tot[k]); p=_tbl_perks(tot[k])
+        if h: hstat[k]=h
+        if p: pstat[k]=p
+    return comps,hstat,pstat,n_all
+
+def magg_total():
+    cut=_magg_cutoff()
+    with MAGG_LOCK: return sum(D.get("n",0) for d,D in MAGG["days"].items() if d>=cut)
+
+def magg_apply():
+    """최근 30일 표로 갈아끼운다. 표본이 MAGG_MIN 보다 적으면(첫 배포 직후 등) 옛 파일을 둔다."""
+    global COMPS,HEROSTAT,PERKSTAT
+    c,h,p,n=magg_tables()
+    if n<MAGG_MIN:
+        print(f"[조합집계] 최근 {MAGG_DAYS}일 {n:,}경기 — {MAGG_MIN:,}경기 미만이라 기존 파일 유지"); return False
+    with LOCK: COMPS,HEROSTAT,PERKSTAT=c,h,p
+    MAGG["built"]=int(time.time()); MAGG["applied"]=True
+    print(f"[조합집계] 최근 {MAGG_DAYS}일 {n:,}경기로 조합·티어·특성 갱신 "
+          f"(프로·사람 {c['pro_human']['matches']:,} · 캐주얼·사람 {c['casual_human']['matches']:,})")
+    return True
+
+def magg_prune():
+    cut=_magg_cutoff()
+    with MAGG_LOCK:
+        for d in [d for d in MAGG["days"] if d<cut]:
+            MAGG["days"].pop(d,None); MAGG["ids"].pop(d,None); MAGG["dirty"].discard(d); MAGG["drop"].add(d)
+
+def magg_save():
+    """바뀐 날짜만 저장(Redis 날짜별 키, 없으면 파일). 하루치 = 카운터 + 센 경기 ID."""
+    with MAGG_LOCK:
+        dirty=sorted(MAGG["dirty"]); drop=sorted(MAGG["drop"])
+        MAGG["dirty"].clear(); MAGG["drop"].clear()
+        blobs={d:_rk_pack({"agg":MAGG["days"][d],"ids":",".join(sorted(MAGG["ids"].get(d,())))})
+               for d in dirty if d in MAGG["days"]}
+        days=sorted(MAGG["days"])
+        whole=({d:{"agg":MAGG["days"][d],"ids":",".join(sorted(MAGG["ids"].get(d,())))} for d in days}
+               if not _rk_redis() else None)
+    if _rk_redis():
+        for d,b in blobs.items():
+            if len(b)>900_000: print(f"[조합집계] {d} 저장 생략 — {len(b):,}바이트(Upstash 1MB 한도)"); continue
+            redis_cmd("SET",MAGG_KEY+"d:"+d,b)
+        for d in drop: redis_cmd("DEL",MAGG_KEY+"d:"+d)
+        if blobs or drop: redis_cmd("SET",MAGG_KEY+"days",json.dumps(days))
+    else:
+        try:
+            with open(MAGG_FILE+".tmp","w",encoding="utf-8") as f: json.dump(whole,f,separators=(",",":"))
+            os.replace(MAGG_FILE+".tmp",MAGG_FILE)
+        except Exception as e: print("[조합집계] 파일 저장 실패:",e)
+
+def magg_load():
+    """부팅 때 저장된 날짜별 카운터를 읽는다. 센 경기 ID는 SEEN_MATCH 에도 넣어 재시작 뒤 같은 경기를 다시 안 받는다."""
+    got={}
+    if _rk_redis():
+        try: days=json.loads(redis_cmd("GET",MAGG_KEY+"days") or "[]")
+        except Exception: days=[]
+        for d in days:
+            o=_rk_unpack(redis_cmd("GET",MAGG_KEY+"d:"+d) or "")
+            if isinstance(o,dict): got[d]=o
+    else:
+        try: got=json.load(open(MAGG_FILE,encoding="utf-8"))
+        except Exception: got={}
+    cut=_magg_cutoff(); n=0; seen=0
+    with MAGG_LOCK:
+        for d,o in got.items():
+            if d<cut or not isinstance(o,dict) or not isinstance(o.get("agg"),dict): continue
+            MAGG["days"][d]=o["agg"]
+            ids={x for x in str(o.get("ids") or "").split(",") if x}
+            MAGG["ids"][d]=ids; SEEN_MATCH.update(ids)
+            n+=o["agg"].get("n",0); seen+=len(ids)
+    print(f"[조합집계] 저장분 {len(MAGG['days'])}일 · {n:,}경기 로드 (경기 ID {seen:,}개는 재수집 안 함)")
+
+def magg_finish():
+    """이름검사가 끝날 때: 창 밖 날짜 정리 → 저장 → 표 갱신."""
+    try: magg_prune(); magg_save(); magg_apply()
+    except Exception as e: print("[조합집계] 오류:",e)
+
 
 def harvest_match_ids(s, mids):
     """경기 id 목록 중 아직 안 본 경기의 결과를 받아 6인 전원의 '당시 이름'을 수확.
@@ -1110,7 +1397,7 @@ def harvest_match_ids(s, mids):
     if skipped>0:
         todo=todo[:SWEEP_MATCH_MAX]
         print(f"[이름검사] 새 경기 {len(todo)+skipped}건 중 {len(todo)}건만 이번에 수확 (나머지는 다음 스윕)")
-    noted=0; rid=9000; j=0
+    noted=0; counted=0; rid=9000; j=0
     while j<len(todo):
         batch=todo[j:j+30]; rid+=1
         try:
@@ -1121,6 +1408,9 @@ def harvest_match_ids(s, mids):
                     for js in body["match_result_info_jsons"]:
                         try: m=json.loads(js)
                         except: continue
+                        try:
+                            if magg_add(m): counted+=1      # 조합·티어·특성 자동 집계 (추가 요청 없음)
+                        except Exception as e: print("[조합집계] 경기 세기 실패:",e)
                         for p in m.get("PlayerResults",[]):
                             if p.get("PlayerId") and p.get("Name") and hist_note_past(p["PlayerId"],p["Name"]): noted+=1
                     break
@@ -1131,6 +1421,7 @@ def harvest_match_ids(s, mids):
             except: pass
             time.sleep(1); s=connect(); continue
         time.sleep(0.1)
+    if counted: print(f"[조합집계] 경기 {len(todo):,}건 중 {counted:,}건 새로 셈 (최근 {MAGG_DAYS}일 창)")
     return noted, s
 
 def sweep_names(harvest=True):
@@ -1140,7 +1431,7 @@ def sweep_names(harvest=True):
     if not ids: return
     print(f"[이름검사] {len(ids)}명 이름 수집...")
     s=connect(); rid=8000; changed=0; i=0
-    mseen=set(); match_ids=[]   # 이번 스윕에서 모은 경기 id (rich_info 응답에 이미 있어 추가 요청 없음)
+    mrank={}   # 경기 id → 최신 순위(0=그 유저의 가장 최근 경기). rich_info 응답에 이미 있어 추가 요청 없음
     while i<len(ids):
         batch=ids[i:i+60]; rid+=1
         try:
@@ -1160,8 +1451,10 @@ def sweep_names(harvest=True):
                             if ch:
                                 changed+=1
                                 if pid in CACHE["players"]: CACHE["players"][pid]["n"]=nm
-                        for mid in ((acc.get("match_state") or {}).get("match_history") or []):
-                            if mid not in mseen: mseen.add(mid); match_ids.append(mid)
+                        # match_history 는 오래된 것 → 최신 순이다. 뒤에서부터 순위를 매긴다.
+                        hist=(acc.get("match_state") or {}).get("match_history") or []
+                        for i,mid in enumerate(reversed(hist)):
+                            if i<mrank.get(mid,1<<30): mrank[mid]=i
                     break
             i+=60
         except (ConnectionError, socket.timeout, OSError):
@@ -1172,6 +1465,10 @@ def sweep_names(harvest=True):
     noted=0
     if harvest:
         try:
+            # ⚠️ **최신 경기부터** 받는다. 전원의 기록을 합치면 21만 건이 넘고 한 번에 1.5만 건만 받는데,
+            #    예전엔 유저 순서·오래된 순으로 받아서 절반 넘게 30일 밖 옛 경기였고 새 경기는 며칠씩 밀렸다
+            #    (2026-09-26 실측: 4,000건 중 30일 안 1,746건). 모든 유저의 가장 최근 경기 → 두 번째 → … 순.
+            match_ids=sorted(mrank,key=mrank.get)
             noted,s=harvest_match_ids(s, match_ids)
         except Exception as e:
             print("[이름검사] 경기 수확 오류:",e)
@@ -1179,7 +1476,7 @@ def sweep_names(harvest=True):
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
-    hist_save(); dau_save(); build_site_data()
+    hist_save(); dau_save(); magg_finish(); build_site_data()
     print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건")
 def sweep_scheduler():
     while True:
@@ -1377,7 +1674,9 @@ class H(http.server.BaseHTTPRequestHandler):
 
                 "stale_min":int((time.time()-CACHE["last_refresh"])/60) if CACHE["last_refresh"] else None,
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"],
-                "dau_today":sum(dau_counts(game_day(time.time())).values())}   # 오늘 접속 유저(추적 대상 기준)
+                "dau_today":sum(dau_counts(game_day(time.time())).values()),
+                # 조합·티어·특성 자동 집계: auto=False 면 아직 옛 파일(표본 부족)
+                "magg":{"auto":MAGG["applied"],"days":len(MAGG["days"]),"matches":magg_total(),"built":MAGG["built"] or None}}   # 오늘 접속 유저(추적 대상 기준)
             return self._send(200,json.dumps(st))
         if path=="/api/dau":
             # 오늘 접속 유저(서버별) — 사이트 이용자 누구나. 점검 게이트 아래에 있어야 한다.

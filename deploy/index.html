@@ -460,6 +460,9 @@ function syncSeasonSel(){
 // heroes.json(build_heroes.py가 미리 집계)을 그대로 그린다. 갈래는 조합 탭과 동일하게
 // 프로/캐주얼 × 사람만/봇포함 4가지. 봇전과 대인전은 순위가 아예 뒤집히므로 꼭 나눠 본다.
 let tierMode='casual', tierBots='human', tierHero='';
+// 조합·티어·특성은 서버가 최근 N일 경기로 2시간마다 자동 집계한다(auto). 옛 배치 파일이면 '전체 기간'.
+const periodPill=S=>`<span class="per">${S&&S.auto?t('last_n_days',{n:S.days||30}):t('all_period')}</span>`;
+const autoNote=S=>(S&&S.auto&&S.built_at)?` · ${t('auto_updated',{t:timeAgo(S.built_at)})}`:'';
 function hasTiers(){
   const S=D.hstat||{};
   return ['pro_human','pro_bot','casual_human','casual_bot'].some(k=>S[k]&&S[k].heroes&&S[k].heroes.length);
@@ -536,7 +539,7 @@ function renderTiers(){
   const thin=d.matches<1000?` · <span class="warn">${t('tier_thin')}</span>`:'';
 
   // 1) 캐릭터 승률·픽률
-  h+=`<div class="sect-t">${ICON.trophy} ${t('tier_title')} <span class="per">${t('all_period')}</span> <span class="muted" style="font-size:12px;font-weight:400">${t('tier_note',{m:d.matches.toLocaleString(),f:S.from||'',t:S.to||''})}${thin}</span></div>`;
+  h+=`<div class="sect-t">${ICON.trophy} ${t('tier_title')} ${periodPill(S)} <span class="muted" style="font-size:12px;font-weight:400">${t('tier_note',{m:d.matches.toLocaleString(),f:S.from||'',t:S.to||''})}${thin}${autoNote(S)}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_hero')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
   const maxPick=Math.max(...d.heroes.map(x=>x[4]),0.01);
   d.heroes.forEach((c,i)=>{
@@ -612,7 +615,7 @@ function renderComps(){
     h+='</div>';
   }
   const note=legacy?'':' · '+t(compBots==='human'?'comps_human_note':'comps_bot_note');
-  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} <span class="per">${t('all_period')}</span> <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:d.min_games||C.min_games||20})}${note}</span></div>`;
+  h+=`<div class="sect-t">${ICON.trophy} ${t('comps_title')} ${periodPill(C)} <span class="muted" style="font-size:12px;font-weight:400">${t('comps_note',{m:d.matches.toLocaleString(),n:d.min_games||C.min_games||20})}${note}${autoNote(C)}</span></div>`;
   h+=`<div class="card" style="overflow-x:auto"><table><thead><tr><th class="rank">${t('c_rank')}</th><th>${t('c_comp')}</th><th class="num">${t('c_wr')}</th><th class="num hcol">${t('c_pick')}</th><th class="num">${t('c_games')}</th></tr></thead><tbody>`;
   if(!d.comps.length) h+=`<tr><td colspan="5" class="empty">${t('comps_empty')}</td></tr>`;
   const maxPick=Math.max(...d.comps.map(c=>c[4]),0.01);
