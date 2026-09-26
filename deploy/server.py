@@ -15,11 +15,11 @@ except Exception: pass
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
-# ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400 → 21500(2026-08-20).
+# ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400 → 21500(08-20) → 22000(08-28) → 22100(09-26).
 #    주소·프로토콜(길이헤더 6B + JSON)은 그대로였고 포트만 옮겨갔다.
 #    또 바뀌면 코드 수정 없이 Render 환경변수 RS_PORT만 고치면 된다.
 #    (Render가 쓰는 PORT 환경변수는 웹 포트라 이름이 겹치면 안 된다 → RS_PORT)
-PORT=int(os.environ.get("RS_PORT","22000"))
+PORT=int(os.environ.get("RS_PORT","22100"))
 PID=os.environ.get("RS_PID",""); SEC=os.environ.get("RS_SEC","")  # 환경변수에서 (코드에 secret 없음)
 # 시즌은 박아두지 않는다. 서버에 물어서 참가자가 있는 달을 찾는다.
 # (예전엔 "202607"이 박혀 있어서 8월이 됐는데 7월 보드만 갱신하는 사고가 났다.)
@@ -134,7 +134,7 @@ def _game_auth_ok(port):
 def scan_game_port():
     """이력에 있던 포트 → 20000~24000(50 간격, 실측값이 전부 100·500 단위) 순으로 훑는다."""
     from concurrent.futures import ThreadPoolExecutor
-    cands=[p for p in (22000,21500,21400,21300) if p!=PORT]
+    cands=[p for p in (22100,22000,21500,21400,21300) if p!=PORT]
     cands+=[p for p in range(20000,24001,50) if p!=PORT and p not in cands]
     opened=[]
     with ThreadPoolExecutor(32) as ex:
@@ -143,14 +143,14 @@ def scan_game_port():
     for p in opened:
         if _game_auth_ok(p): return p
     return None
-def auto_find_port():
-    """접속 실패 시 호출. 새 포트를 찾으면 PORT를 바꾸고 True."""
+def auto_find_port(reason="접속 실패"):
+    """접속 실패·구버전 인증 시 호출. 새 포트를 찾으면 PORT를 바꾸고 True."""
     global PORT
     if not PORT_SCAN["lock"].acquire(blocking=False): return False   # 다른 스레드가 스캔 중
     try:
         if time.time()-PORT_SCAN["last"]<PORT_SCAN_COOLDOWN: return False
         PORT_SCAN["last"]=time.time()
-        print(f"[포트] {PORT} 접속 실패 — 자동 탐색 시작 (20000~24000)")
+        print(f"[포트] {PORT} {reason} — 자동 탐색 시작 (20000~24000)")
         p=scan_game_port()
         if p:
             print(f"[포트] 게임서버 발견: {PORT} → {p} · 즉시 전환. ⚠️ Render 환경변수 RS_PORT도 {p}(으)로 바꿔둘 것(재배포하면 환경변수로 돌아간다)")
@@ -162,7 +162,7 @@ def auto_find_port():
     finally:
         PORT_SCAN["lock"].release()
 
-def connect():
+def connect(_retry=True):
     # ⚠️ 여기서 실패하면 사이트는 멀쩡한데 데이터만 안 쌓인다. UptimeRobot은 /api/status가
     #    200이라 초록으로 보고한다(2026-08-04에 20시간 동안 못 알아챘다). 그래서 상태를 남긴다.
     for attempt in (1,2):
@@ -179,7 +179,20 @@ def connect():
     #    영영 안 닫혀서, 게임서버가 느릴 때마다 fd가 1개씩 새어 결국 서버가 접속을 못 받았다.
     try:
         s.settimeout(20)
-        s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC})); rd(s)
+        s.sendall(fr({"request_id":1,"type":"authenticate_account"},{"player_id":PID,"authentication_secret":SEC}))
+        _,auth=rd(s)
+        res=(auth or {}).get("authentication_result")
+        if res and res!="success":
+            # ⚠️ 2026-09-26 업데이트: 옛 포트(22000)가 죽지 않고 'obsolete_version'으로 답했다.
+            #    예전엔 옛 포트가 아예 끊겨서 자동 탐색이 돌았는데, 이번엔 연결이 되니 그대로 눌러앉았다.
+            #    조회는 아직 되지만(같은 DB) 곧 닫힐 서버다 → 인증 결과를 보고 새 서버를 찾아 옮긴다.
+            #    못 찾으면 이 연결로 계속 간다(조회가 되는 동안은 수집을 멈추지 않는다).
+            GAME_STATE.update(ok=True,err=f"인증 {res} (포트 {PORT})",at=int(time.time()))
+            if _retry and auto_find_port(f"인증 {res}"):
+                try: s.close()
+                except Exception: pass
+                return connect(_retry=False)
+            return s
         GAME_STATE.update(ok=True,err="",at=int(time.time()))
         return s
     except Exception as e:
