@@ -310,17 +310,20 @@ def hist_load():
                 if not cur:
                     base[pid]=rec               # Redis에만 있는 유저
                     continue
-                # 둘 다 있으면: 옛 닉네임은 합치고, 현재 닉네임은 파일(최신 수집) 우선
+                # 둘 다 있으면: 옛 닉네임은 합치고, 현재 닉네임은 **Redis 우선**.
+                # ⚠️ 예전엔 "파일(최신 수집) 우선"이었다. 그런데 파일(name_history.json)은 2026-08-03에
+                #    한 번 만든 뒤 안 바뀌고 Redis만 2시간마다 갱신돼서, **재배포할 때마다 개명 유저가
+                #    8/3 이름으로 되돌아가고 진짜 현재 이름은 '이전 닉네임'으로 밀려났다**
+                #    (2026-09-27 실측: 개명 유저 1,163명 중 370명). 파일 이름이 다르면 옛 이름으로 남긴다.
                 merged=list(cur.get("prev") or [])
                 for pn in (rec.get("prev") or []):
                     if pn and pn not in merged: merged.append(pn)
-                # ⚠️ 파일 cur을 쓰면 Redis의 cur이 그냥 증발한다. 재배포 직전에 개명한
-                #    유저가 그 이름으로 검색이 안 되던 원인. 다른 이름이면 옛 이름으로 남긴다
-                #    (다음 이름검사에서 실제 이름이 확인되면 cur/prev가 알아서 정리된다).
-                rcur=nname(rec.get("cur"))
-                if rcur and rcur!=nname(cur.get("cur")) and rcur not in merged: merged.append(rcur)
+                fcur=nname(cur.get("cur")); rcur=nname(rec.get("cur"))
+                if rcur:
+                    if fcur and fcur!=rcur and fcur not in merged: merged.append(fcur)
+                    cur["cur"]=rcur
                 cur["prev"]=merged
-                if not cur.get("cur"): cur["cur"]=rec.get("cur")
+                if rec.get("ts"): cur["ts"]=rec["ts"]          # 개명 관측 시각도 Redis 쪽이 맞다
         except Exception as e:
             print("이름이력 Redis 해석 실패:",e)
     # 정규화 + "현재 이름이 옛 이름 목록에도 들어있는" 상태 청소
@@ -1453,8 +1456,10 @@ def sweep_names(harvest=True):
                                 if pid in CACHE["players"]: CACHE["players"][pid]["n"]=nm
                         # match_history 는 오래된 것 → 최신 순이다. 뒤에서부터 순위를 매긴다.
                         hist=(acc.get("match_state") or {}).get("match_history") or []
-                        for i,mid in enumerate(reversed(hist)):
-                            if i<mrank.get(mid,1<<30): mrank[mid]=i
+                        # ⚠️ 변수 이름을 i 로 쓰면 안 된다 — 바깥 while 의 묶음 번호 i 를 덮어써서 같은 유저만
+                        #    무한 반복했다(2026-09-26 운영에서 부팅 검사가 끝나지 않음). k 로 쓴다.
+                        for k,mid in enumerate(reversed(hist)):
+                            if k<mrank.get(mid,1<<30): mrank[mid]=k
                     break
             i+=60
         except (ConnectionError, socket.timeout, OSError):
@@ -1464,6 +1469,11 @@ def sweep_names(harvest=True):
         time.sleep(0.1)
     noted=0
     if harvest:
+        # 닉네임은 여기서 이미 최신이다. 경기 수확(최대 1.5만 건, 수 분)을 기다리지 않고 목록에 먼저 반영한다.
+        with LOCK:
+            for pid,rec in NAME_HIST.items():
+                if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+        hist_save(); build_site_data()
         try:
             # ⚠️ **최신 경기부터** 받는다. 전원의 기록을 합치면 21만 건이 넘고 한 번에 1.5만 건만 받는데,
             #    예전엔 유저 순서·오래된 순으로 받아서 절반 넘게 30일 밖 옛 경기였고 새 경기는 며칠씩 밀렸다
