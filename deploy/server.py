@@ -263,7 +263,7 @@ def _env(*names):
 UPSTASH_URL=_env("UPSTASH_URL","UPSTASH_REDIS_REST_URL").rstrip("/")
 UPSTASH_TOKEN=_env("UPSTASH_TOKEN","UPSTASH_REDIS_REST_TOKEN")
 REDIS_STATE={"ok":None,"err":"미시도"}   # /api/status 로 연결 상태 확인용
-HIST_STATE={"n":0,"bytes":0}             # 실제 저장한 이력 수/크기 (1MB 한도 감시용)
+HIST_STATE={"n":0,"bytes":0,"ready":False}   # 실제 저장한 이력 수/크기 (1MB 한도 감시용) · ready=Redis 이력을 읽었나
 HIST_KEY="rsgg:namehist"
 SWEEP_SEC=int(os.environ.get("SWEEP_SEC","7200"))   # 전원 이름검사 주기(기본 2시간)
 # 스윕 1회당 이름을 수확할 경기 수 상한. 첫 스윕은 전원의 최근 경기가 전부 '처음 보는
@@ -291,7 +291,7 @@ def nname(s):
     return (s or "").strip()
 
 BOGUS_TS=(1790516000,1790517000)   # 2026-09-27 22:33:20 ~ 22:50:00 KST (hist_load 참고)
-def hist_load():
+def hist_load(tries=3):
     """파일(새로 수집한 기준선)과 Redis(누적된 개명 이력)를 **합친다.**
     ⚠️ 예전엔 Redis가 있으면 파일을 통째로 무시했다. 그래서 새로 수집한 유저가
        이름 목록에 안 들어가 검색이 안 되는 사고가 났다(2026-08-01)."""
@@ -302,7 +302,19 @@ def hist_load():
         print("이름이력 파일 로드 실패:",e)
     n_file=len(base)
     n_redis=0
-    raw=hist_unpack(redis_cmd("GET",HIST_KEY))
+    # ⚠️ Redis를 못 읽은 채 시작하면 메모리는 8/3 씨앗뿐이다. 그 상태로 hist_save가 돌면
+    #    누적된 개명 이력을 통째로 덮어쓰고, 부팅 검사는 씨앗과 다른 이름을 전부 '방금 개명'으로
+    #    찍는다(09-27 가짜 개명 시각 370건과 같은 사고). 그래서 읽기 성공 여부를 ready로 남기고
+    #    ready가 아니면 저장하지 않는다. "키가 없음"(첫 실행)은 실패가 아니다.
+    ok=True; got=None
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        for i in range(tries):
+            got=redis_cmd("GET",HIST_KEY)
+            if REDIS_STATE["ok"]: break
+            if i+1<tries: time.sleep(3)
+        else: ok=False
+    raw=hist_unpack(got)
+    if got and raw is None: ok=False      # 값은 있는데 못 풀었다 = 덮어쓰면 안 되는 상태
     if raw:
         try:
             d=raw; n_redis=len(d)
@@ -326,7 +338,7 @@ def hist_load():
                 cur["prev"]=merged
                 if rec.get("ts"): cur["ts"]=rec["ts"]          # 개명 관측 시각도 Redis 쪽이 맞다
         except Exception as e:
-            print("이름이력 Redis 해석 실패:",e)
+            print("이름이력 Redis 해석 실패:",e); ok=False
     # 정규화 + "현재 이름이 옛 이름 목록에도 들어있는" 상태 청소
     for pid,rec in base.items():
         c=nname(rec.get("cur")); rec["cur"]=c
@@ -340,8 +352,11 @@ def hist_load():
         # (최근 개명순) 맨 위를 실제로는 오래전에 바꾼 유저가 차지했다(2026-09-28 실측: 이 16분에
         # 370명, 평소엔 10분에 0~2명). 진짜 시각은 덮어써져 복구할 수 없으니 '모름'으로 돌려 뒤로 보낸다.
         if BOGUS_TS[0]<=(rec.get("ts") or 0)<BOGUS_TS[1]: rec.pop("ts",None)
-    NAME_HIST.clear(); NAME_HIST.update(base)
-    keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
+    with LOCK:   # 재읽기(hist_save)는 서버가 돌던 중에 일어난다 — /api/search 순회와 겹치면 안 된다
+        NAME_HIST.clear(); NAME_HIST.update(base)
+        keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
+    HIST_STATE["ready"]=ok
+    if not ok: print("⚠️ 이름이력 Redis 읽기 실패 — 씨앗 파일로 임시 시작, 다시 읽을 때까지 저장 보류")
     HIST_STATE.update(n=len(keep),bytes=len(hist_pack(keep).encode()))
     print(f"이름이력 {len(NAME_HIST)}명 (파일 {n_file} + Redis {n_redis} 병합) · "
           f"개명 {HIST_STATE['n']}명 / 저장 {HIST_STATE['bytes']}바이트")
@@ -376,6 +391,16 @@ def hist_unpack(raw):
         print("이름이력 해석 실패:",e); return None
 def hist_save():
     if not (UPSTASH_URL and UPSTASH_TOKEN): return
+    if not HIST_STATE["ready"]:
+        # 부팅 때 Redis를 못 읽었다 → 지금 메모리를 저장하면 누적 이력을 덮어쓴다. 다시 읽기만 한다.
+        # 그 사이 메모리에서 잡은 개명은 버린다(Redis가 정답이고, 진짜 개명은 다음 검사가 다시 잡는다).
+        hist_load(tries=1)
+        if HIST_STATE["ready"]:
+            hist_seed(); hist_sync_players()
+            print("[이름이력] Redis 다시 읽기 성공 — 누적 이력으로 복원")
+        else:
+            print("[이름이력] Redis를 아직 못 읽어 저장 보류(덮어쓰기 방지)")
+        return
     # ⚠️ 복사는 LOCK 안에서 **깊게**(rec는 NAME_HIST와 같은 객체라 얕은 복사만 하면
     #    LOCK 밖 직렬화 중에 다른 스레드가 rec를 고쳐 순회 중 예외가 난다),
     #    직렬화·네트워크 전송은 LOCK 밖에서(락을 쥔 채 통신하면 사이트 전체가 멎는다).
@@ -415,7 +440,9 @@ def hist_observe(pid,name):
             prev=[pn for pn in rec.get("prev",[]) if pn!=name]
             if old and old not in prev: prev.insert(0,old)
             rec["prev"]=prev; rec["cur"]=name
-            rec["ts"]=int(time.time())   # 관측 시각(= 개명을 확인한 때). 관리자 목록 정렬·표시용
+            # 관측 시각(= 개명을 확인한 때). 개명 목록 정렬용. 이력을 못 읽은 동안(ready=False)의
+            # '개명'은 대개 씨앗 이름과의 차이일 뿐이라 찍지 않는다
+            if HIST_STATE["ready"]: rec["ts"]=int(time.time())
             return list(prev), True
         return list(rec.get("prev",[])), False
 
@@ -716,6 +743,10 @@ def load_disk():
     rank_load()
     dau_load()
     magg_load(); magg_apply()          # 저장된 30일 집계가 있으면 부팅 즉시 최신 조합으로
+    hist_sync_players()
+
+def hist_sync_players():
+    """이름이력(현재 이름·옛 이름)을 플레이어 캐시에 반영. 부팅 때와 Redis 재읽기 때 쓴다."""
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]:
@@ -1689,6 +1720,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "port_auto":PORT_SCAN["found"] or None,   # 0이 아니면 자동 탐색으로 갈아탄 시각 — RS_PORT를 game_port 값으로 바꿔둘 것
 
                 "stale_min":int((time.time()-CACHE["last_refresh"])/60) if CACHE["last_refresh"] else None,
+                "hist_ready":HIST_STATE["ready"],   # False = 개명 이력을 Redis에서 못 읽어 저장 보류 중
                 "rank_days":len(RANK["days"]),"rank_base":RANK["base_day"],
                 "dau_today":sum(dau_counts(game_day(time.time())).values()),
                 # 조합·티어·특성 자동 집계: auto=False 면 아직 옛 파일(표본 부족)
