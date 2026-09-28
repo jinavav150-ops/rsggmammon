@@ -290,6 +290,7 @@ def nname(s):
     잡혀 옛 닉네임 목록이 유령 이름으로 더러워진다(수집본 8,180명 중 188명 해당)."""
     return (s or "").strip()
 
+BOGUS_TS=(1790516000,1790517000)   # 2026-09-27 22:33:20 ~ 22:50:00 KST (hist_load 참고)
 def hist_load():
     """파일(새로 수집한 기준선)과 Redis(누적된 개명 이력)를 **합친다.**
     ⚠️ 예전엔 Redis가 있으면 파일을 통째로 무시했다. 그래서 새로 수집한 유저가
@@ -334,6 +335,11 @@ def hist_load():
             pn=nname(pn)
             if pn and pn!=c and pn not in seen: seen.add(pn); out.append(pn)
         rec["prev"]=out
+        # 가짜 개명 시각 지우기. 2026-09-27 22:33~22:50 KST 배포 때 8/3 이름으로 되돌아가 있던
+        # 370명을 부팅 검사가 바로잡으면서 hist_observe가 ts를 '방금'으로 찍었다 → 개명 목록
+        # (최근 개명순) 맨 위를 실제로는 오래전에 바꾼 유저가 차지했다(2026-09-28 실측: 이 16분에
+        # 370명, 평소엔 10분에 0~2명). 진짜 시각은 덮어써져 복구할 수 없으니 '모름'으로 돌려 뒤로 보낸다.
+        if BOGUS_TS[0]<=(rec.get("ts") or 0)<BOGUS_TS[1]: rec.pop("ts",None)
     NAME_HIST.clear(); NAME_HIST.update(base)
     keep={pid:rec for pid,rec in NAME_HIST.items() if rec.get("prev")}
     HIST_STATE.update(n=len(keep),bytes=len(hist_pack(keep).encode()))
