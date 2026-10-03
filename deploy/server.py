@@ -1464,6 +1464,19 @@ def harvest_match_ids(s, mids):
     if counted: print(f"[조합집계] 경기 {len(todo):,}건 중 {counted:,}건 새로 셈 (최근 {MAGG_DAYS}일 창)")
     return noted, s
 
+def cache_player(pid,acc):
+    """게임서버 계정 응답으로 플레이어 캐시를 통째로 갱신한다. 반환: 새 캐시 항목.
+    ⚠️ prev(옛 닉네임)는 parse_acc에 없다. 그냥 덮어쓰면 목록·검색에서 옛 닉네임이 빠진다
+       (프로필 새로고침한 유저의 '이전 닉네임'이 다음 동기화까지 사라지던 문제) → 이력에서 다시 붙인다."""
+    comp=parse_acc(acc)
+    with LOCK:
+        rec=NAME_HIST.get(pid)
+        if rec and rec.get("prev"): comp["prev"]=rec["prev"]
+        old=CACHE["players"].get(pid)
+        if not comp.get("n") and old and old.get("n"): comp["n"]=old["n"]   # 이름이 빈 응답이면 기존 이름 유지
+        CACHE["players"][pid]=comp
+    return comp
+
 def sweep_names(harvest=True):
     """전원 이름 재검사. harvest=False 면 경기 이름 수확을 건너뛴다(부팅 직후용 —
     첫 수확은 경기 수만 건이라 무겁고, 지금 급한 건 목록의 닉네임뿐이다)."""
@@ -1488,9 +1501,14 @@ def sweep_names(harvest=True):
                         if pid and nm:
                             nm=nname(nm)
                             _,ch=hist_observe(pid,nm)
-                            if ch:
-                                changed+=1
-                                if pid in CACHE["players"]: CACHE["players"][pid]["n"]=nm
+                            if ch: changed+=1
+                        # 승률·레벨 등 스탯도 갱신한다. ⚠️ 예전엔 같은 응답(rich_info)을 받고도 이름만 쓰고
+                        #    스탯은 버렸다 → 목록 스탯은 신규 유저·프로필 새로고침한 유저만 바뀌고 나머지는
+                        #    씨앗(8/2) 값 그대로였다(2026-10-03 실측: 프로 1위 목록 81.0%/Lv190, 실제 81.3%/Lv195).
+                        #    게임서버 요청은 늘지 않는다 — 이미 받은 응답을 쓰는 것뿐이다.
+                        if pid:
+                            try: cache_player(pid,acc)
+                            except Exception as e: print(f"[이름검사] 스탯 갱신 실패 {pid}:",e)   # 한 명 때문에 전체가 멈추지 않게
                         # match_history 는 오래된 것 → 최신 순이다. 뒤에서부터 순위를 매긴다.
                         hist=(acc.get("match_state") or {}).get("match_history") or []
                         # ⚠️ 변수 이름을 i 로 쓰면 안 된다 — 바깥 while 의 묶음 번호 i 를 덮어써서 같은 유저만
@@ -1593,8 +1611,7 @@ def live_player(pid):
                     if a.get("player_id")==pid: acc=a; break
                 if acc: break
         if not acc: return None
-        comp=parse_acc(acc)
-        with LOCK: CACHE["players"][pid]=comp
+        comp=cache_player(pid,acc)
         dau_observe(pid,comp.get("ls"),comp.get("r"))
         comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
         _prev,_ch=hist_observe(pid, comp.get("n")); comp2["prev"]=_prev
