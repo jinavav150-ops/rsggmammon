@@ -15,11 +15,11 @@ except Exception: pass
 
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
-# ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400 → 21500(08-20) → 22000(08-28) → 22100(09-26).
+# ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400 → 21500(08-20) → 22000(08-28) → 22100(09-26) → 23000(10-12, v2.3.0 · 포트 = 버전 숫자).
 #    주소·프로토콜(길이헤더 6B + JSON)은 그대로였고 포트만 옮겨갔다.
 #    또 바뀌면 코드 수정 없이 Render 환경변수 RS_PORT만 고치면 된다.
 #    (Render가 쓰는 PORT 환경변수는 웹 포트라 이름이 겹치면 안 된다 → RS_PORT)
-PORT=int(os.environ.get("RS_PORT","22100"))
+PORT=int(os.environ.get("RS_PORT","23000"))
 PID=os.environ.get("RS_PID",""); SEC=os.environ.get("RS_SEC","")  # 환경변수에서 (코드에 secret 없음)
 # 시즌은 박아두지 않는다. 서버에 물어서 참가자가 있는 달을 찾는다.
 # (예전엔 "202607"이 박혀 있어서 8월이 됐는데 7월 보드만 갱신하는 사고가 났다.)
@@ -134,7 +134,7 @@ def _game_auth_ok(port):
 def scan_game_port():
     """이력에 있던 포트 → 20000~24000(50 간격, 실측값이 전부 100·500 단위) 순으로 훑는다."""
     from concurrent.futures import ThreadPoolExecutor
-    cands=[p for p in (22100,22000,21500,21400,21300) if p!=PORT]
+    cands=[p for p in (23000,23100,24000,22100,22000) if p!=PORT]
     cands+=[p for p in range(20000,24001,50) if p!=PORT and p not in cands]
     opened=[]
     with ThreadPoolExecutor(32) as ex:
