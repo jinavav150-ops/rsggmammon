@@ -270,9 +270,11 @@ SWEEP_SEC=int(os.environ.get("SWEEP_SEC","7200"))   # 전원 이름검사 주기
 # 경기'라 수만 건일 수 있다 → 상한을 걸고 나머지는 다음 스윕에 이어서 한다.
 SWEEP_MATCH_MAX=int(os.environ.get("SWEEP_MATCH_MAX","15000"))
 SEEN_MATCH=set()   # 이름 수확을 마친 경기 id (메모리 — 재시작하면 한 번 다시 훑지만, 수확은 멱등이라 무해)
-def redis_cmd(*args):
+def redis_cmd(*args,fail=None):
+    """실패하면 fail(기본 None)을 돌려준다. GET의 '키 없음'도 None이라, 둘을 갈라야 하면
+    fail=REDIS_FAIL 을 넘긴다(REDIS_STATE는 다른 스레드가 바로 덮어쓸 수 있어 믿을 수 없다)."""
     if not UPSTASH_URL or not UPSTASH_TOKEN:
-        REDIS_STATE.update(ok=False,err="환경변수 없음"); return None
+        REDIS_STATE.update(ok=False,err="환경변수 없음"); return fail
     try:
         req=urllib.request.Request(UPSTASH_URL+"/",data=json.dumps(list(args)).encode(),
             headers={"Authorization":"Bearer "+UPSTASH_TOKEN,"Content-Type":"application/json"})
@@ -283,7 +285,8 @@ def redis_cmd(*args):
     except Exception as e:
         code=getattr(e,"code",None)
         REDIS_STATE.update(ok=False,err=f"{type(e).__name__}{'/'+str(code) if code else ''}")
-        return None
+        return fail
+REDIS_FAIL=object()
 def nname(s):
     """이름 정규화. 게임서버가 주는 이름은 뒤에 공백이 붙어 오는 경우가 있는데
     ("GiGO.91 " vs "GiGO.91"), 그대로 비교하면 공백 하나 차이로 개명이 일어난 걸로
@@ -891,6 +894,12 @@ def attach_live_pro(s,seasons,result,rid):
             n=len(found[c].get("entries") or [])
             result["boards"][c].pop(pro_board(c),None)
             print(f"[갱신] 프로 보드 {c}({n}명)는 아직 안 열린 시즌의 떠돌이 → 뺐다")
+    # 진행 중인 것보다 옛 보드 = 끝난 시즌 → 최종 순위를 Redis에 보관한다(이미 받은 보드라 요청 0).
+    # 이 달 탭이 사라져도(다음 달 1일) attach_archived_pro가 다음 달 탭에 붙여 준다.
+    for c in sorted(found):
+        if c<live:
+            try: pro_archive_save(c,found[c])
+            except Exception as e: print(f"[프로보관] {c} 저장 오류:",e)
     mb=found[live]
     mb["live"]=True
     if next_ts and (declared==live): mb["next_ts"]=next_ts
@@ -900,23 +909,71 @@ def attach_live_pro(s,seasons,result,rid):
         print(f"[갱신] 프로 시즌 {live}이 아직 진행 중 → {cur} 탭에 붙였다"
               + (f" (다음 시즌 {time.strftime('%m/%d %H:%M',time.localtime(mb['next_ts']))})" if mb.get("next_ts") else ""))
 
-# ── 끝난 프로 시즌 보관 (data/pro_archive.json, make_pro_archive.py가 만든다) ──
+# ── 끝난 프로 시즌 보관 ─────────────────────────────────
 # 프로 시즌은 15일에 바뀐다. 최근 두 달만 받으면 그 사이에 끝난 프로 시즌(예: 2026-08 = 8/15~9/15)이
-# 어느 탭에도 안 나온다. 끝난 시즌은 더 안 바뀌므로 받아둔 최종 순위를 **다음 달 탭**에 붙인다(게임서버 요청 0).
+# 다음 달 1일부터 어느 탭에도 안 나온다. 끝난 시즌은 더 안 바뀌므로 최종 순위를 **다음 달 탭**에 붙인다(게임서버 요청 0).
+# 보관처는 두 곳이고 파일이 우선한다(손으로 고친 값이 이긴다):
+#   · data/pro_archive.json — make_pro_archive.py로 손으로 만든다(2026-08 시즌이 여기 있다)
+#   · Redis rsgg:proarc:<시즌> — attach_live_pro가 끝난 시즌 보드를 보면 자동으로 저장한다.
+#     ⚠️ Render 디스크는 재배포 때 씨앗으로 돌아가니 자동 보관을 파일에 쓰면 안 된다.
 PRO_ARCHIVE=os.path.join(DATA,"pro_archive.json")
+PRO_ARC_KEY="rsgg:proarc:"
+PRO_ARC={}   # 시즌 → Redis에서 읽은 보관본(없으면 None). **읽기에 성공한 것만** 담는다
 def next_code(code):
     y,m=int(code[:4]),int(code[4:])
     return f"{y+1}01" if m==12 else f"{y}{m+1:02d}"
+def prev_code(code):
+    y,m=int(code[:4]),int(code[4:])
+    return f"{y-1}12" if m==1 else f"{y}{m-1:02d}"
+def pro_range(code):
+    """프로 시즌 기간 표시. 시즌 YYYYMM = 그 달 15일 09:00 ~ 다음 달 15일 09:00 (2026-08-13 실측 주기)."""
+    return f"{int(code[4:])}/15~{int(next_code(code)[4:])}/15"
+def pro_archive_get(code):
+    """Redis 보관본 → (읽기 성공?, 보관본 또는 None). 한 번 읽은 건 메모리에 둔다(쓰는 쪽도 이 서버뿐)."""
+    if code in PRO_ARC: return True,PRO_ARC[code]
+    if not _rk_redis(): return False,None
+    raw=redis_cmd("GET",PRO_ARC_KEY+code,fail=REDIS_FAIL)
+    if raw is REDIS_FAIL: return False,None          # 못 읽음 ≠ 없음 (hist_ready와 같은 원리)
+    a=_rk_unpack(raw) if raw else None
+    if raw and a is None: return False,None          # 깨진 값도 '없음'으로 보지 않는다(덮어쓰기 방지)
+    PRO_ARC[code]=a
+    return True,a
+def pro_archive_save(code,mb):
+    """끝난 프로 시즌 보드를 Redis에 보관한다. 바뀐 게 없으면 아무것도 안 쓴다.
+    ⚠️ Redis를 못 읽었으면 쓰지 않는다 — 이미 있는 보관본을 모른 채 덮어쓸 수 있다.
+    ⚠️ 이미 있는 보관본보다 **작은** 보드로는 덮어쓰지 않는다(일부만 받은 응답·탈퇴로 줄어든 보드).
+       더 크면 덮어쓴다 — 시즌 끝을 일찍 판단해 중간 순위를 받았어도 다음 갱신에서 최종으로 고쳐진다."""
+    ents=sorted(mb.get("entries") or [], key=lambda e:e["rank"])
+    if not ents: return
+    if not _rk_redis(): return
+    ok,old=pro_archive_get(code)
+    if not ok:
+        print(f"[프로보관] {code}: Redis 보관본을 못 읽어 저장 보류(덮어쓰기 방지)"); return
+    rec={"range":pro_range(code),"size":mb.get("size") or len(ents),"saved":int(time.time()),
+         "ids":[e["player_id"] for e in ents],"scores":[e["score"] for e in ents]}
+    if old:
+        if old.get("ids")==rec["ids"] and old.get("scores")==rec["scores"]: return
+        if len(rec["ids"])<len(old.get("ids") or []):
+            print(f"[프로보관] {code}: 새 보드({len(rec['ids'])}명)가 보관본({len(old['ids'])}명)보다 작아 그대로 둔다"); return
+    if redis_cmd("SET",PRO_ARC_KEY+code,_rk_pack(rec),fail=REDIS_FAIL) is REDIS_FAIL:
+        print(f"[프로보관] {code}: Redis 저장 실패 — 다음 갱신에서 다시 시도"); return
+    PRO_ARC[code]=rec
+    print(f"[프로보관] {code} 프로 시즌 최종 {len(rec['ids'])}명 → Redis{' (갱신)' if old else ''}")
 def attach_archived_pro(seasons,result):
-    try: arc=json.load(open(PRO_ARCHIVE,encoding="utf-8"))
-    except FileNotFoundError: return
-    except Exception as e: print("[갱신] 프로 보관 파일 읽기 오류:",e); return
+    try: arc=(json.load(open(PRO_ARCHIVE,encoding="utf-8")).get("seasons") or {})
+    except FileNotFoundError: arc={}
+    except Exception as e: print("[갱신] 프로 보관 파일 읽기 오류:",e); arc={}
     shown={mb.get("season") for sb in result["boards"].values() for mb in sb.values() if mb.get("kind")=="pro"}
-    for code,a in (arc.get("seasons") or {}).items():
-        tab=next_code(code); ids=a.get("ids") or []
-        if code in shown or tab not in seasons or not ids: continue   # 이미 보이거나, 붙일 탭이 없다
+    for tab in seasons:
+        code=prev_code(tab)                       # 이 탭에 붙을 수 있는 건 직전 달 프로 시즌뿐
+        if code in shown: continue                # 이미 자기 달 탭에 보인다
+        a=arc.get(code)
+        if not a:
+            ok,a=pro_archive_get(code)            # 못 읽었으면 이번엔 안 붙인다(다음 갱신에서 다시)
+        ids=(a or {}).get("ids") or []
+        if not ids: continue
         result["boards"].setdefault(tab,{})[f"pro_archive_{code}"]={"kind":"pro_prev","label":"pro_prev",
-            "season":code,"range":a.get("range"),"final":True,"size":a.get("size") or len(ids),
+            "season":code,"range":a.get("range") or pro_range(code),"final":True,"size":a.get("size") or len(ids),
             "entries":[{"rank":i+1,"player_id":p,"score":s2} for i,(p,s2) in enumerate(zip(ids,a.get("scores") or []))]}
 
 def apply_leaderboards(lb):
@@ -1020,7 +1077,8 @@ def refresh_leaderboards():
         # 프로는 캐주얼과 시즌 주기가 다르다 — 진행 중인 프로 보드를 현재 시즌 탭으로 옮긴다
         try: attach_live_pro(s,seasons,result,rid+500)
         except Exception as e: print("[갱신] 프로 시즌 정리 오류:",e)
-        attach_archived_pro(seasons,result)   # 끝난 프로 시즌 최종 순위 (보관 파일, 요청 없음)
+        try: attach_archived_pro(seasons,result)   # 끝난 프로 시즌 최종 순위 (보관 파일 + Redis, 게임서버 요청 없음)
+        except Exception as e: print("[갱신] 프로 보관 붙이기 오류:",e)
         for sb2 in result["boards"].values():
             for mb2 in sb2.values(): allids.update(e["player_id"] for e in mb2.get("entries") or [])
     finally:
@@ -1749,6 +1807,10 @@ class H(http.server.BaseHTTPRequestHandler):
             if MAINT_BLANK: return self._send(404,BLANK_HTML,"text/html","no-store")
             return self._send(503,MAINT_HTML,"text/html","no-store")
         if path=="/api/status":
+            # 점검 중에도 누구나 여는 주소라(UptimeRobot) 운영 지표는 관리자에게만 준다.
+            # 화면이 쓰는 건 live(실시간 버튼)와 last_refresh(시즌 배지 툴팁)뿐이다.
+            if not self.admin_ok():
+                return self._send(200,json.dumps({"live":True,"last_refresh":CACHE["last_refresh"]}),"application/json","no-store",[("Vary","Cookie")])
             with LOCK: st={"live":True,"last_refresh":CACHE["last_refresh"],
                 "players":len(CACHE["players"]),"seasons":CACHE["seasons"],
                 "redis":REDIS_STATE["ok"],"redis_err":REDIS_STATE["err"],
@@ -1763,7 +1825,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "dau_today":sum(dau_counts(game_day(time.time())).values()),
                 # 조합·티어·특성 자동 집계: auto=False 면 아직 옛 파일(표본 부족)
                 "magg":{"auto":MAGG["applied"],"days":len(MAGG["days"]),"matches":magg_total(),"built":MAGG["built"] or None}}   # 오늘 접속 유저(추적 대상 기준)
-            return self._send(200,json.dumps(st))
+            return self._send(200,json.dumps(st),"application/json","no-store",[("Vary","Cookie")])   # 쿠키에 따라 내용이 다르다 — 캐시가 섞지 않게
         if path=="/api/dau":
             # 오늘 접속 유저(서버별) — 사이트 이용자 누구나. 점검 게이트 아래에 있어야 한다.
             return self._send(200,json.dumps(dau_report(),ensure_ascii=False),"application/json","no-store")
