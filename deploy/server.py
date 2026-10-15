@@ -556,6 +556,7 @@ def build_snapshot():
         for season,sd in sdata.items():
             b={}
             for label,pids in (sd.get("boards") or {}).items():
+                if label=="pro_prev": continue   # 끝난 시즌 보관 보드 — 안 바뀌니 매일 기준선에 넣을 필요가 없다
                 sc=[]
                 for pid in pids:
                     e=((ranks.get(pid) or {}).get(season) or {}).get(label)
@@ -797,7 +798,7 @@ def find_seasons(s):
         if len(found)>=SEASON_KEEP: break
     return found
 
-def label_of(kind,label): return label if kind=="hero" else ("pro" if kind=="pro" else "casual")
+def label_of(kind,label): return label if kind in ("hero","pro_prev") else ("pro" if kind=="pro" else "casual")
 # 보드 키는 언어중립(pro/casual/영문 캐릭터명). 표시 이름은 브라우저가 언어별로 붙인다.
 
 # ── 프로 시즌은 캐주얼과 주기가 다르다 ─────────────────────────
@@ -899,6 +900,25 @@ def attach_live_pro(s,seasons,result,rid):
         print(f"[갱신] 프로 시즌 {live}이 아직 진행 중 → {cur} 탭에 붙였다"
               + (f" (다음 시즌 {time.strftime('%m/%d %H:%M',time.localtime(mb['next_ts']))})" if mb.get("next_ts") else ""))
 
+# ── 끝난 프로 시즌 보관 (data/pro_archive.json, make_pro_archive.py가 만든다) ──
+# 프로 시즌은 15일에 바뀐다. 최근 두 달만 받으면 그 사이에 끝난 프로 시즌(예: 2026-08 = 8/15~9/15)이
+# 어느 탭에도 안 나온다. 끝난 시즌은 더 안 바뀌므로 받아둔 최종 순위를 **다음 달 탭**에 붙인다(게임서버 요청 0).
+PRO_ARCHIVE=os.path.join(DATA,"pro_archive.json")
+def next_code(code):
+    y,m=int(code[:4]),int(code[4:])
+    return f"{y+1}01" if m==12 else f"{y}{m+1:02d}"
+def attach_archived_pro(seasons,result):
+    try: arc=json.load(open(PRO_ARCHIVE,encoding="utf-8"))
+    except FileNotFoundError: return
+    except Exception as e: print("[갱신] 프로 보관 파일 읽기 오류:",e); return
+    shown={mb.get("season") for sb in result["boards"].values() for mb in sb.values() if mb.get("kind")=="pro"}
+    for code,a in (arc.get("seasons") or {}).items():
+        tab=next_code(code); ids=a.get("ids") or []
+        if code in shown or tab not in seasons or not ids: continue   # 이미 보이거나, 붙일 탭이 없다
+        result["boards"].setdefault(tab,{})[f"pro_archive_{code}"]={"kind":"pro_prev","label":"pro_prev",
+            "season":code,"range":a.get("range"),"final":True,"size":a.get("size") or len(ids),
+            "entries":[{"rank":i+1,"player_id":p,"score":s2} for i,(p,s2) in enumerate(zip(ids,a.get("scores") or []))]}
+
 def apply_leaderboards(lb):
     """시즌별로 보드를 정리한다. ranks는 {유저: {시즌: {보드: [순위, 점수]}}}."""
     seasons=lb.get("seasons") or []
@@ -915,7 +935,7 @@ def apply_leaderboards(lb):
             lab=label_of(mb["kind"],mb["label"]); blabels.append(lab)
             meta[lab]={"size":mb["size"],"kind":mb["kind"]}
             # 프로 보드는 시즌 주기가 달라 다른 달 탭에 얹혀 있을 수 있다 → 실제 시즌을 같이 알려준다
-            for k in ("season","live","next_ts"):
+            for k in ("season","live","next_ts","range","final"):
                 if mb.get(k) is not None: meta[lab][k]=mb[k]
             if mb["kind"]=="hero": hlabels.append(lab)
             ordered=[]
@@ -1000,6 +1020,7 @@ def refresh_leaderboards():
         # 프로는 캐주얼과 시즌 주기가 다르다 — 진행 중인 프로 보드를 현재 시즌 탭으로 옮긴다
         try: attach_live_pro(s,seasons,result,rid+500)
         except Exception as e: print("[갱신] 프로 시즌 정리 오류:",e)
+        attach_archived_pro(seasons,result)   # 끝난 프로 시즌 최종 순위 (보관 파일, 요청 없음)
         for sb2 in result["boards"].values():
             for mb2 in sb2.values(): allids.update(e["player_id"] for e in mb2.get("entries") or [])
     finally:

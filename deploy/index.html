@@ -345,7 +345,8 @@ function t(k,v){let s=(L.ui&&L.ui[k]!=null)?L.ui[k]:k;
 const mapName=id=>(L.maps&&L.maps[String(id)])||'';
 const perkName=id=>(L.perks&&L.perks[String(id)])||('#'+id);
 const regionName=c=>(L.regions&&L.regions[c])||c||'';
-const boardLabel=b=>b==='pro'?t('tab_pro'):b==='casual'?t('tab_casual'):hk(b);
+// pro_prev = 끝난 프로 시즌 최종 순위(서버 보관 파일). 탭 이름에 기간을 붙여 진행 중인 프로와 구분한다.
+const boardLabel=b=>b==='pro'?t('tab_pro'):b==='casual'?t('tab_casual'):b==='pro_prev'?t('tab_pro')+' '+((BM.pro_prev&&BM.pro_prev.range)||''):hk(b);
 window.setLang=function(l){ if(!I18N[l])return; LANG=l; L=I18N[l];
   try{localStorage.setItem('rsgg_lang',l);}catch(e){}
   applyStatic(); render(); closeLangMenu(); };
@@ -411,7 +412,7 @@ let curBoard='pro', curPage=0, curRegion='', curFilter='';
 const PAGE=100;
 
 function tabsHtml(){
-  let modes=['pro','casual'].filter(m=>B[m]);
+  let modes=['pro','pro_prev','casual'].filter(m=>B[m]);
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
   if(hasTiers()) h+=`<div class="tab ${curBoard==='tiers'?'on':''}" onclick="goBoard('tiers')">${t('tab_tiers')}</div>`;
@@ -743,6 +744,7 @@ const kstStamp=ts=>{const d=new Date((ts+9*3600)*1000).toISOString();
   return d.slice(5,7)+'/'+d.slice(8,10)+' '+d.slice(11,16);};
 function proNoteHtml(){
   const m=BM[curBoard];
+  if(curBoard==='pro_prev'&&m) return `<div class="muted" style="margin:-4px 0 10px;font-size:12px">${t('pro_final_note',{s:seasonLabel(m.season),r:m.range||''})}</div>`;
   if(curBoard!=='pro'||!m||!m.season||m.season===curSeason) return '';
   let s=t('pro_season_note',{s:seasonLabel(m.season)});
   if(m.next_ts) s+=' · '+t('pro_season_next',{d:kstStamp(m.next_ts)});
@@ -754,7 +756,7 @@ function renderBoard(){
   h+=`<div class="row-filter">${regionOptions()}
     <input class="mini" id="boardFilter" placeholder="${t('find_in_board')}" value="${esc(curFilter)}" oninput="onFilterInput(this)" style="flex:1;min-width:140px">
     <span class="muted" id="boardCount">${boardCountHtml()}</span></div>`;
-  h+=moversHtml();              // 오늘 많이 오른 유저 (지역·페이지와 무관하게 보드 전체 기준)
+  if(curBoard!=='pro_prev') h+=moversHtml();   // 오늘 많이 오른 유저 — 끝난 시즌 보드는 안 움직인다 (지역·페이지와 무관하게 보드 전체 기준)
   h+=`<div id="boardBody">${boardBodyHtml()}</div>`;
   app.innerHTML=h;
 }
@@ -820,7 +822,7 @@ function renderPlayer(id){
   </div></div>`;
   // 랭킹 (모드 + 캐릭터)
   const rk=(p.rk&&p.rk[curSeason])||{};   // 랭킹은 {시즌:{보드:[순위,점수]}}
-  const modeRows=['pro','casual'].filter(m=>rk[m]);
+  const modeRows=['pro','pro_prev','casual'].filter(m=>rk[m]);
   const heroRows=SD().hero_labels.filter(hl=>rk[hl]).sort((a,b)=>rk[a][0]-rk[b][0]);
   h+=`<div class="sect-t">${ICON.trophy} ${t('rank_section')} (${t('season')} ${seasonLabel(curSeason)})</div><div class="card" style="overflow-x:auto"><table>
     <thead><tr><th>${t('c_type')}</th><th class="num">${t('c_rank')}</th><th class="num">${t('c_score')}</th><th class="hcol">${t('c_top_pct')}</th></tr></thead><tbody>`;
