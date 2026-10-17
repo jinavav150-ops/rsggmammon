@@ -1622,6 +1622,29 @@ def sweep_names(harvest=True):
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
     hist_save(); dau_save(); magg_finish(); build_site_data()
     print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건")
+# ── 스스로 깨워두기 ─────────────────────────────────────
+# 무료 Render는 **15분 동안 들어오는 요청이 없으면 잠든다.** 잠들면 30분 갱신·2시간 이름검사·매일 랭킹 기준선이
+# 전부 멈추고, 깨어날 때 새 인스턴스라 씨앗(8,180명)부터 다시 시작한다.
+# 2026-10-15 23:58 ~ 10-17 11:02 실제로 35시간 잠들었다(그날 접속자 집계·랭킹 기준선 누락, 추적 유저 9,680명에 멈춤).
+# 외부 핑(UptimeRobot)에만 기대지 않고, 서버가 자기 **공개 주소**로 10분마다 요청한다 — Render 입구를 거쳐 들어오므로
+# '들어오는 요청'으로 잡힌다. 주소는 Render가 넣어주는 RENDER_EXTERNAL_URL(로컬엔 없음 → 안 돈다).
+KEEPALIVE_URL=(os.environ.get("KEEPALIVE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+KEEPALIVE_SEC=int(os.environ.get("KEEPALIVE_SEC","600"))   # 15분보다 짧아야 한다
+def keepalive():
+    url=KEEPALIVE_URL+"/api/status"
+    print(f"[깨우기] {KEEPALIVE_SEC//60}분마다 {url} 요청 (잠들기 방지)")
+    fails=0
+    while True:
+        time.sleep(KEEPALIVE_SEC)
+        try:
+            req=urllib.request.Request(url,headers={"User-Agent":"rsgg-keepalive"})
+            with urllib.request.urlopen(req,timeout=30) as r: r.read()
+            if fails: print(f"[깨우기] 복구 (연속 실패 {fails}회 뒤)")
+            fails=0
+        except Exception as e:
+            fails+=1
+            if fails in (1,3) or fails%12==0: print(f"[깨우기] 실패 {fails}회:",e)   # 로그가 넘치지 않게
+
 def sweep_scheduler():
     while True:
         time.sleep(SWEEP_SEC)
@@ -1989,6 +2012,7 @@ def main():
     threading.Thread(target=boot_refresh,daemon=True).start()   # 씨앗 → 실데이터 (1~2분)
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=sweep_scheduler,daemon=True).start()
+    if KEEPALIVE_URL: threading.Thread(target=keepalive,daemon=True).start()
     srv=http.server.ThreadingHTTPServer(("0.0.0.0",WEB_PORT),H)
     print(f"\n✅ RS.GG 서버 실행 중 →  http://localhost:{WEB_PORT}")
     print(f"   리더보드 {LB_REFRESH_SEC//60}분마다 자동 갱신 · 프로필은 새로고침 버튼으로 실시간")
