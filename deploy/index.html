@@ -1070,7 +1070,8 @@ function paintDau(){
   const j=dauCache, days=j.days||[], regs=j.regions||[];
   const today=days[0]||{total:0,regions:{}}, yday=days[1]||{total:0,regions:{}};
   // 어제가 집계 시작 전(하한값)이면 '어제 대비'는 의미가 없다 — 비교 자체를 숨긴다
-  const ydayOk=!(j.since&&yday.day&&yday.day<j.since);
+  // 서버가 멈춰 정확히 못 센 날(gap)도 비교하지 않는다
+  const ydayOk=!(j.since&&yday.day&&yday.day<j.since)&&!yday.gap;
   const delta=(a,b)=>ydayOk?dauDelta(a,b):`<span class="ddelta muted">—</span>`;
   let h=tabsHtml();
   h+=`<div class="sect-t">${t('dau_title')}<span class="muted" style="font-size:12px;font-weight:400">${dauDay(today.day)} · ${t('dau_reset',{t:j.reset_kst||'09:00'})}</span></div>`;
@@ -1093,17 +1094,19 @@ function paintDau(){
   for(const r of regs) h+=`<th class="num">${esc(regionName(r)||r)}</th>`;
   h+='</tr></thead><tbody>';
   if(!rows.length) h+=`<tr><td colspan="${regs.length+2}" class="empty">${t('no_result')}</td></tr>`;
-  let partial=false;
+  let partial=false, gapSeen=false;
   rows.forEach((d,i)=>{
     const lb=!!(j.since&&d.day<j.since); if(lb) partial=true;   // 집계 시작 전 = 하한값
-    const f=v=>(lb?'≥ ':'')+(v||0).toLocaleString();
-    h+=`<tr class="${i===0?'today':''}${lb?' muted':''}"><td>${dauDay(d.day)}</td><td class="num">${f(d.total)}</td>`;
+    if(d.gap) gapSeen=true;                                     // 서버가 멈춰 정확히 못 센 날 — 숫자를 뺀다
+    const f=v=>d.gap?'—':(lb?'≥ ':'')+(v||0).toLocaleString();
+    h+=`<tr class="${i===0?'today':''}${lb||d.gap?' muted':''}"><td>${dauDay(d.day)}${d.gap?' *':''}</td><td class="num">${f(d.total)}</td>`;
     for(const r of regs) h+=`<td class="num">${f(d.regions[r])}</td>`;
     h+='</tr>';
   });
   h+='</tbody></table></div>';
   h+=`<div class="dnote">${t('dau_note',{n:(j.tracked||0).toLocaleString(),h:j.interval_h||2})}`
-    +(partial?`<br>${t('dau_partial',{d:dauDay(j.since)})}`:'')+`</div>`;
+    +(partial?`<br>${t('dau_partial',{d:dauDay(j.since)})}`:'')
+    +(gapSeen?`<br>* ${t('dau_gap')}`:'')+`</div>`;
   app.innerHTML=h;
 }
 

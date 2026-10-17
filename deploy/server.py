@@ -107,6 +107,7 @@ C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","k
 "final":"85762019","fire":"85842040","playtime":"85762515","pro_rating":"111239832",
 "casual_rating":"15599528","pro_matches":"113488083"}
 C_LASTSESS="76774339"   # LastSessionTimestamp — 마지막 접속일(게임 하루 시작 시각, KST 09:00 경계)
+C_PREVSESS="76774330"   # PreviousSessionTimestamp — 그 전 접속일. 어제 오고 오늘 또 온 사람을 어제에도 세는 데 쓴다
 H_PT="85762515"; H_RT="15599528"; H_VIC="77974177"; H_PRE="106323940"; H_PERK="55097452"; H_SKIN="56735408"
 
 # ── 프로토콜 ─────────────────────────────────────────
@@ -749,7 +750,14 @@ import calendar
 DAU_KEEP_DAYS=60
 DAU_KEY="rsgg:dau"
 DAU_FILE=os.path.join(DATA,"dau.json")
-DAU={"days":{},"region":{},"saved":{},"updated":0,"since":""}   # days {하루번호: set(pid)} · region {pid: 지역} · saved {"YYYY-MM-DD": {지역: n}} · since 집계 시작일
+DAU={"days":{},"region":{},"saved":{},"updated":0,"since":"","full":set(),"full_since":""}   # days {하루번호: set(pid)} · region {pid: 지역} · saved {"YYYY-MM-DD": {지역: n}} · since 집계 시작일
+# ── 정확히 못 센 날 가려내기 ──
+# 직전 접속일(C_PREVSESS)도 같이 보므로, 하루 D에 온 사람은 **D+1이 끝나기 전까지** 마지막 접속일이나 직전 접속일 중
+# 하나가 D로 남는다. 그래서 D+1 동안 **추적 유저 전원**을 한 번이라도 훑으면(full 표시) D는 정확하다.
+# D+1에 그런 훑기가 없었으면(서버가 잠들었거나 죽었거나 재배포 직후 보충 중) D는 정확하지 않다 → 화면에서 숫자를 뺀다.
+# full 표시는 이 기능이 생긴 뒤(full_since)부터만 있다. 그 전 날짜 중 서버 중단을 확인한 날은 아래 목록으로 따진다.
+DAU_GAP_SEED={"2026-10-15","2026-10-16"}   # 10-15 23:58 ~ 10-17 11:02 서버가 잠들었다(인수인계 1-1장)
+DAU_PS={"lt":0,"eq":0,"none":0}            # 직전 접속일 관측 통계(이번 훑기) — 뜻이 '그 전 접속일'인지 로그로 확인
 # ⚠️ since(집계를 시작한 날) 이전 날짜의 숫자는 **하한값**이다 — 그날 마지막으로 접속하고 그 뒤 안 들어온
 #    사람만 남아 있어서(그 후 다시 접속한 사람은 최신 날짜로 옮겨감) 실제보다 작다. 화면에 "≥"로 표시한다.
 DAU_LOCK=threading.Lock()
@@ -758,14 +766,35 @@ def game_day_label(d): return kst_day(d*86400)          # 그 하루가 시작�
 def game_day_of_label(s):
     try: return calendar.timegm(time.strptime(s,"%Y-%m-%d"))//86400
     except Exception: return None
-def dau_observe(pid,ls,region):
-    """프로필 한 건 관측. ls=LastSessionTimestamp(유닉스초, 하루 시작으로 정렬돼 있음)."""
+def dau_observe(pid,ls,region,ps=None):
+    """프로필 한 건 관측. ls=LastSessionTimestamp(유닉스초, 하루 시작으로 정렬돼 있음), ps=PreviousSessionTimestamp.
+    ps가 ls보다 이른 날이면 그날에도 왔다는 뜻이라 그날 집합에도 넣는다(실제로 온 사람만 더해지므로 부풀지 않는다)."""
     if not (pid and isinstance(ls,int) and ls>0): return
     d=game_day(ls)
+    pd=game_day(ps) if isinstance(ps,int) and ps>0 else None
     with DAU_LOCK:
         DAU["days"].setdefault(d,set()).add(pid)
+        if pd is None: DAU_PS["none"]+=1
+        elif pd<d:
+            DAU_PS["lt"]+=1
+            if d-pd<=DAU_KEEP_DAYS: DAU["days"].setdefault(pd,set()).add(pid)
+        else: DAU_PS["eq"]+=1
         if region: DAU["region"][pid]=region
         DAU["updated"]=int(time.time())
+def dau_observe_acc(pid,acc):
+    """게임서버 계정 응답 그대로 관측(마지막·직전 접속일을 카운터에서 읽는다)."""
+    cc=(acc.get("counters_state") or {}).get("counter_collection",{}) or {}
+    v=lambda k:(cc.get(k) or {}).get("value")
+    dau_observe(pid,v(C_LASTSESS),(acc.get("regions") or [""])[0],v(C_PREVSESS))
+def dau_mark_full(d):
+    with DAU_LOCK: DAU["full"].add(game_day_label(d))
+def dau_gap(d,today):
+    """하루 번호 d를 정확히 못 셌나. 어제·오늘은 아직 판단하지 않는다(어제는 오늘 훑기로 채워지는 중)."""
+    if d+1>=today: return False
+    nxt=game_day_label(d+1)
+    with DAU_LOCK: full=DAU["full"]; since=DAU["full_since"]
+    if game_day_label(d) in DAU_GAP_SEED or (since and nxt>=since): return nxt not in full
+    return False
 def dau_counts(d):
     """하루 번호 → {지역: 인원}. 실시간 집합과 저장된 집계 중 지역별로 큰 쪽."""
     with DAU_LOCK:
@@ -790,7 +819,10 @@ def dau_save():
         keep=sorted(DAU["saved"])[-DAU_KEEP_DAYS:]
         DAU["saved"]={k:DAU["saved"][k] for k in keep}
         if not DAU["since"]: DAU["since"]=game_day_label(today)
-        blob=json.dumps({"since":DAU["since"],"days":DAU["saved"]},separators=(",",":"))
+        if not DAU["full_since"]: DAU["full_since"]=game_day_label(today)
+        DAU["full"]={k for k in DAU["full"] if k>=game_day_label(today-DAU_KEEP_DAYS)}
+        blob=json.dumps({"since":DAU["since"],"days":DAU["saved"],"full":sorted(DAU["full"]),
+                         "full_since":DAU["full_since"]},separators=(",",":"))
     if _rk_redis(): redis_cmd("SET",DAU_KEY,blob)
     else:
         try:
@@ -804,20 +836,25 @@ def dau_load():
         except Exception: raw=None
     try: saved=json.loads(raw) if raw else {}
     except Exception: saved={}
-    since=""
-    if isinstance(saved,dict) and "days" in saved:     # 새 형식 {"since":..., "days":{...}}
-        since=str(saved.get("since") or ""); saved=saved.get("days") or {}
+    since=""; full=[]; full_since=""
+    if isinstance(saved,dict) and "days" in saved:     # 새 형식 {"since":..., "days":{...}, "full":[...], "full_since":...}
+        since=str(saved.get("since") or ""); full=saved.get("full") or []; full_since=str(saved.get("full_since") or "")
+        saved=saved.get("days") or {}
     if isinstance(saved,dict):
         with DAU_LOCK:
             DAU["saved"]={k:v for k,v in saved.items() if isinstance(v,dict)}
             DAU["since"]=since or (min(DAU["saved"]) if DAU["saved"] else "")
+            DAU["full"]|={str(x) for x in full}
+            DAU["full_since"]=full_since or DAU["full_since"]
     print(f"[접속자] 저장된 일별 집계 {len(DAU['saved'])}일 로드")
 def dau_report(n=30):
     """화면용. 오늘부터 n일치, 최신순. regions는 합계 많은 순의 지역 코드 목록."""
     today=game_day(time.time()); out=[]; regsum={}
     for d in range(today,today-n,-1):
         c=dau_counts(d)
-        out.append({"day":game_day_label(d),"start":d*86400,"total":sum(c.values()),"regions":c})
+        row={"day":game_day_label(d),"start":d*86400,"total":sum(c.values()),"regions":c}
+        if dau_gap(d,today): row["gap"]=True     # 정확히 못 센 날 — 화면이 숫자를 빼고 보여준다
+        out.append(row)
         for r,v in c.items(): regsum[r]=regsum.get(r,0)+v
     with DAU_LOCK: observed=len(DAU["region"]); upd=DAU["updated"]; since=DAU["since"]
     with LOCK: tracked=len(CACHE["players"])
@@ -1294,6 +1331,7 @@ def search_game(q):
     return ids
 
 NEW_MAX=int(os.environ.get("NEW_MAX","1500"))   # 한 번의 갱신에서 새로 받아올 유저 수 상한
+NEW_PENDING={"n":None}   # None = 아직 리더보드를 한 번도 못 받음
 def fetch_new_players(ids):
     """랭킹 보드에 있는데 players 캐시에 없는 유저의 프로필을 받아 채운다.
 
@@ -1304,6 +1342,7 @@ def fetch_new_players(ids):
     ⚠️ players.json은 오프라인 수집 스크립트가 만든다. 시즌이 흐르면 랭킹에 새로 진입한
        유저가 계속 생기므로, 서버가 스스로 메꿔야 한다."""
     with LOCK: missing=[i for i in ids if i not in CACHE["players"]]
+    NEW_PENDING["n"]=max(0,len(missing)-NEW_MAX)   # 이번에 못 받고 다음 갱신으로 미룬 수(0이어야 '전원 추적 중')
     if not missing: return 0
     capped=missing[:NEW_MAX]
     if len(missing)>NEW_MAX:
@@ -1326,7 +1365,7 @@ def fetch_new_players(ids):
                             if not pid: continue
                             comp=parse_acc(acc)
                             with LOCK: CACHE["players"][pid]=comp
-                            dau_observe(pid,comp.get("ls"),comp.get("r"))
+                            dau_observe_acc(pid,acc)
                             hist_observe(pid, comp.get("n"))   # 이름이력에도 등록(검색되게)
                             got+=1
                         break
@@ -1713,7 +1752,10 @@ def sweep_names(harvest=True):
     첫 수확은 경기 수만 건이라 무겁고, 지금 급한 건 목록의 닉네임뿐이다)."""
     ids=list(CACHE["players"].keys())
     if not ids: return
-    print(f"[이름검사] {len(ids)}명 이름 수집...")
+    # 추적 유저를 빠짐없이 들고 시작하는 훑기인가 — 접속자 '정확히 센 날' 판단에 쓴다(dau_gap)
+    full=FRESH["ok"] and NEW_PENDING["n"]==0
+    with DAU_LOCK: DAU_PS.update(lt=0,eq=0,none=0)
+    print(f"[이름검사] {len(ids)}명 이름 수집..." + (" (전원 추적 중)" if full else " (유저 보충 중 — 접속자 정확도 표시 안 함)"))
     s=connect(); rid=8000; changed=0; i=0
     mrank={}   # 경기 id → 최신 순위(0=그 유저의 가장 최근 경기). rich_info 응답에 이미 있어 추가 요청 없음
     while i<len(ids):
@@ -1728,7 +1770,7 @@ def sweep_names(harvest=True):
                         except: continue
                         pid=acc.get("player_id"); nm=(acc.get("player_state") or {}).get("name")
                         _cc=(acc.get("counters_state") or {}).get("counter_collection",{})
-                        dau_observe(pid,(_cc.get(C_LASTSESS,{}) or {}).get("value"),(acc.get("regions") or [""])[0])
+                        dau_observe_acc(pid,acc)
                         if pid and nm:
                             nm=nname(nm)
                             _,ch=hist_observe(pid,nm)
@@ -1774,6 +1816,9 @@ def sweep_names(harvest=True):
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
+    if full: dau_mark_full(game_day(time.time()))
+    with DAU_LOCK: ps=dict(DAU_PS)
+    print(f"[접속자] 직전 접속일: 더 이른 날 {ps['lt']} · 같은 날 {ps['eq']} · 없음 {ps['none']}")
     hist_save(); dau_save(); magg_finish(); build_site_data()
     del mrank; mem_trim(); rss,hwm=mem_mb()
     print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건"
@@ -1870,7 +1915,7 @@ def live_player(pid):
                 if acc: break
         if not acc: return None
         comp=cache_player(pid,acc)
-        dau_observe(pid,comp.get("ls"),comp.get("r"))
+        dau_observe_acc(pid,acc)
         comp2=player_out(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
         _prev,_ch=hist_observe(pid, comp.get("n")); comp2["prev"]=_prev
         if _ch:
