@@ -13,6 +13,31 @@ import sys
 try: sys.stdout.reconfigure(line_buffering=True); sys.stderr.reconfigure(line_buffering=True)
 except Exception: pass
 
+# ── 메모리 반납 (Linux glibc 전용 — 맥·윈도에서는 아무것도 안 한다) ──────────
+# Render 무료 인스턴스는 512MB를 넘으면 재시작된다(2026-10-14 16:29 · 10-15 15:12). 재시작하면 추적 유저가
+# 씨앗 8,180명부터 다시 차는 데 1시간 30분이 걸린다. 큰 원인은 데이터 구조였고(pack_heroes · IdSet 참고), 이건 보조다.
+# glibc는 스레드마다 메모리 구역(arena)을 따로 만들고(코어×8개까지), 버린 자리를 OS에 잘 돌려주지 않는다.
+# 이 서버는 갱신·이름검사·접속 처리 스레드가 따로 돌아 RSS가 실제 사용량보다 불어난다 → 구역을 2개로 묶고,
+# 큰 작업(갱신·이름검사)이 끝날 때마다 malloc_trim으로 빈 자리를 돌려준다.
+import ctypes
+_LIBC=None
+if sys.platform.startswith("linux"):
+    try: _LIBC=ctypes.CDLL("libc.so.6"); _LIBC.mallopt(-8,2)   # -8 = M_ARENA_MAX
+    except Exception: _LIBC=None
+def mem_trim():
+    if _LIBC:
+        try: _LIBC.malloc_trim(0)
+        except Exception: pass
+def mem_mb():
+    """(지금, 최고) RSS MB. Linux /proc 기준 — 다른 OS는 (None, None)."""
+    d={}
+    try:
+        with open("/proc/self/status") as f:
+            for ln in f:
+                if ln.startswith(("VmRSS:","VmHWM:")): k,v=ln.split(":",1); d[k]=int(v.split()[0])//1024
+    except Exception: pass
+    return d.get("VmRSS"),d.get("VmHWM")
+
 # ── 설정 ─────────────────────────────────────────────
 HOST="frontend-a76415741fc3480f.elb.us-east-1.amazonaws.com"; IP="35.153.75.130"
 # ⚠️ 게임서버 포트는 **업데이트 때 바뀐다.** 2026-08-04 v2.1.4(빌드 380)에서 21300 → 21400 → 21500(08-20) → 22000(08-28) → 22100(09-26) → 23000(10-12, v2.3.0 · 포트 = 버전 숫자).
@@ -244,8 +269,22 @@ def parse_acc(acc):
         "mvp":g(C["mvp"]),"m":m,"w":wins,"kd":round(k/d,2) if (isinstance(k,int) and isinstance(d,int) and d) else None,
         "k":k,"d":d,"dmg":g(C["damage"]),"heal":g(C["heal"]),"db":g(C["double"]),"tr":g(C["triple"]),
         "fh":g(C["final"]),"pt":round(pt/3600) if isinstance(pt,int) else None,"pm":g(C["pro_matches"]),
-        "rm":(acc.get("match_state") or {}).get("match_history",[])[:10],"h":heroes,
+        "hz":pack_heroes(heroes),
         "ls":g(C_LASTSESS)}   # 마지막 접속일 (접속자 집계용)
+
+# ── 플레이어 캐시를 작게 ─────────────────────────────────
+# 캐릭터별 상세(h)는 프로필을 열 때(/api/detail · /api/player)만 쓴다. 그런데 dict로 들면 유저 한 명에 8KB
+# (캐릭터 13명 × 작은 dict·숫자·스킨 이름) → 13,000명에 110MB였다. 2026-10-14·10-15에 512MB 무료 인스턴스가
+# 메모리 초과로 재시작한 가장 큰 원인이다(2026-10-17 측정). 캐시에는 압축 JSON(bytes, 약 0.6KB)으로 들고 내보낼 때만 푼다.
+# 최근 경기 ID(rm)는 화면이 쓰지 않아서(index.html에 없음) 아예 들지 않는다.
+def pack_heroes(h):
+    return zlib.compress(json.dumps(h,ensure_ascii=False,separators=(",",":")).encode(),6) if h else b""
+def player_out(p):
+    """캐시 항목 → 화면에 보낼 dict(h를 푼다). 캐시 항목 자체는 건드리지 않는다."""
+    q={k:v for k,v in p.items() if k!="hz"}
+    try: q["h"]=json.loads(zlib.decompress(p["hz"])) if p.get("hz") else {}
+    except Exception: q["h"]={}
+    return q
 
 # ── 캐시 ─────────────────────────────────────────────
 LOCK=threading.Lock()
@@ -269,7 +308,70 @@ SWEEP_SEC=int(os.environ.get("SWEEP_SEC","7200"))   # 전원 이름검사 주기
 # 스윕 1회당 이름을 수확할 경기 수 상한. 첫 스윕은 전원의 최근 경기가 전부 '처음 보는
 # 경기'라 수만 건일 수 있다 → 상한을 걸고 나머지는 다음 스윕에 이어서 한다.
 SWEEP_MATCH_MAX=int(os.environ.get("SWEEP_MATCH_MAX","15000"))
-SEEN_MATCH=set()   # 이름 수확을 마친 경기 id (메모리 — 재시작하면 한 번 다시 훑지만, 수확은 멱등이라 무해)
+from array import array
+import bisect, heapq
+# ── 경기 ID 집합을 적게 들기 ──
+# 경기 ID(8자 영문 대문자·숫자)를 set[str]로 들면 한 개에 약 90바이트다. 조합 집계가 센 경기 48만 개 + 수확한 경기
+# 48만 개가 set 두 개에 들어 86MB였다(2026-10-17 측정). 36진수 정수로 바꿔 정렬 배열(8바이트)에 넣는다.
+# 새로 넣는 건 작은 set에 모았다가 5만 개마다 배열에 합친다. 형식이 다른 ID(혹시 바뀌면)는 그냥 문자열 set에 둔다.
+_MID_OK=re.compile(r"^[0-9A-Z]{1,11}$")
+_B36="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+def _mid_key(m):
+    """경기 ID → 정수(36진수 값×16 + 길이 — 길이를 넣어야 앞자리 0이 사라지지 않는다). 형식이 다르면 None."""
+    return int(m,36)*16+len(m) if isinstance(m,str) and _MID_OK.match(m) else None
+def _mid_str(k):
+    n,ln=divmod(k,16); s=""
+    while n: n,r=divmod(n,36); s=_B36[r]+s
+    return s.rjust(ln,"0")
+def _uniq(it):
+    last=None
+    for k in it:
+        if k!=last: yield k; last=k
+class IdSet:
+    """경기 ID 집합(in · add · update · len · 순회). 스레드 안전하지 않다 — 쓰는 쪽이 락을 잡는다."""
+    __slots__=("arr","new","odd")
+    def __init__(self,items=()):
+        self.arr=array("Q"); self.new=set(); self.odd=set()
+        ks=[]
+        for m in items:
+            k=_mid_key(m)
+            if k is None: self.odd.add(m)
+            else: ks.append(k)
+        if ks: ks.sort(); self.arr=array("Q",_uniq(ks))
+    @classmethod
+    def union(cls,sets):
+        """여러 집합을 한 번에 합친다(문자열로 풀지 않고 정렬 배열끼리 병합)."""
+        sets=list(sets); out=cls()
+        for s in sets: s._flush(); out.odd|=s.odd
+        out.arr=array("Q",_uniq(heapq.merge(*[s.arr for s in sets])))
+        return out
+    def replace(self,other):
+        """내용을 other로 바꾼다(전역 이름이 가리키는 객체는 그대로)."""
+        self.arr,self.new,self.odd=other.arr,other.new,other.odd
+    def _has(self,k):
+        i=bisect.bisect_left(self.arr,k)
+        return (i<len(self.arr) and self.arr[i]==k) or k in self.new
+    def __contains__(self,m):
+        k=_mid_key(m)
+        return m in self.odd if k is None else self._has(k)
+    def add(self,m):
+        k=_mid_key(m)
+        if k is None: self.odd.add(m)
+        elif not self._has(k):
+            self.new.add(k)
+            if len(self.new)>=50_000: self._flush()
+    def update(self,items):
+        for m in items: self.add(m)
+    def _flush(self):
+        if self.new:
+            ks=sorted(self.new); self.new=set()
+            self.arr=array("Q",_uniq(heapq.merge(self.arr,ks)))
+    def __len__(self): return len(self.arr)+len(self.new)+len(self.odd)
+    def __iter__(self):
+        for k in self.arr: yield _mid_str(k)
+        for k in list(self.new): yield _mid_str(k)
+        yield from list(self.odd)
+SEEN_MATCH=IdSet()   # 이름 수확을 마친 경기 id (메모리 — 재시작하면 한 번 다시 훑지만, 수확은 멱등이라 무해)
 def redis_cmd(*args,fail=None):
     """실패하면 fail(기본 None)을 돌려준다. GET의 '키 없음'도 None이라, 둘을 갈라야 하면
     fail=REDIS_FAIL 을 넘긴다(REDIS_STATE는 다른 스레드가 바로 덮어쓸 수 있어 믿을 수 없다)."""
@@ -732,9 +834,12 @@ def load_disk():
     try:
         pl=json.load(open(os.path.join(DATA,"players.json"),encoding="utf-8"))
         # players.json은 원본 형식 → 컴팩트로 변환
+        # 원본(15.7MB 파일 → 객체 100MB대)은 바꾸는 대로 버린다. 다 바꾼 뒤에 한꺼번에 버리면
+        # 그동안 원본과 변환본을 같이 들고 있어 부팅 순간 메모리가 가장 높아진다.
         with LOCK:
-            for pid,v in pl.items():
-                CACHE["players"][pid]=to_compact_from_raw(v)
+            for pid in list(pl):
+                CACHE["players"][pid]=to_compact_from_raw(pl.pop(pid))
+        del pl
         print(f"플레이어 {len(CACHE['players'])}명 로드")
     except Exception as e: print("플레이어 로드 실패:",e)
     if UPSTASH_URL and UPSTASH_TOKEN:
@@ -768,7 +873,7 @@ def to_compact_from_raw(v):
         "mvp":v.get("mvp"),"m":v.get("matches"),"w":v.get("wins"),"kd":v.get("kd"),"k":v.get("kills"),
         "d":v.get("deaths"),"dmg":v.get("damage"),"heal":v.get("heal"),"db":v.get("double"),
         "tr":v.get("triple"),"fh":v.get("final"),"pt":v.get("playtime_h"),"pm":v.get("pro_matches"),
-        "rm":v.get("recent_matches",[]),"h":heroes}
+        "hz":pack_heroes(heroes)}   # 압축 이유는 pack_heroes 참고
 
 def month_codes(back=SEASON_LOOKBACK):
     """이번 달부터 거슬러 올라간 YYYYMM 목록."""
@@ -1021,8 +1126,24 @@ def slim_player(p):
 #    쓰는 도중 방문한 사람은 **잘린 파일**을 받아 화면이 백지가 됐다.
 # ⚠️ build_site_data는 갱신 스레드와 이름검사 스레드 양쪽에서 부른다.
 #    주기가 1800초 · 21600초로 정확히 12배라 6시간마다 동시에 실행된다 → 전용 락으로 직렬화.
+# ⚠️ 메모리에는 **gzip본만** 둔다(5.3MB → 2MB). 예전엔 본문 전체를 문자열 하나로 만든 뒤
+#    "window.DATA="+…+";"·encode·gzip으로 몇 벌씩 복사해 갱신 때마다 수십 MB가 한꺼번에 잡혔고,
+#    gz본은 만들어 놓고 쓰지도 않았다. 이제 유저 1,000명씩 끊어 직렬화하며 바로 압축·파일 기록한다.
 BUILD_LOCK=threading.Lock()
-SITE_JS={"bytes":b"", "gz":b"", "ts":0}
+SITE_JS={"gz":b"", "size":0, "ts":0}
+SITE_JS_FILE=os.path.join(HERE,"site_data.js")
+SITE_CHUNK=1000
+
+def _site_chunks(out,players):
+    """site_data.js 본문 조각들. 합치면 window.DATA={…,"players":{…}}; 와 같다(키 순서만 다르다)."""
+    dumps=lambda o: json.dumps(o,ensure_ascii=False,separators=(",",":"))
+    yield "window.DATA="+dumps(out)[:-1]+',"players":{'
+    items=list(players.items()); first=True
+    for i in range(0,len(items),SITE_CHUNK):
+        part=dumps(dict(items[i:i+SITE_CHUNK]))[1:-1]
+        if not part: continue
+        yield ("" if first else ",")+part; first=False
+    yield "}};"
 
 def build_site_data():
   with BUILD_LOCK:
@@ -1035,23 +1156,43 @@ def build_site_data():
             if isinstance(v,list) and len(v)>2: pmeta[pid]=[v[1],v[2]]
             elif isinstance(v,list) and len(v)>1: pmeta[pid]=[v[1],""]
         out={"perk_meta":pmeta,"comps":COMPS,"hstat":HEROSTAT,"pstat":PERKSTAT,"slim":True,
-            "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],"players":players,
+            "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)
     out["rdelta"]=rank_delta()
     out["rbase"]={"day":RANK["base_day"],"days":len(RANK["days"])}
-    body=("window.DATA="+json.dumps(out,ensure_ascii=False,separators=(",",":"))+";").encode("utf-8")
-    # 먼저 메모리에 올린다 — 서빙은 여기서만 하므로 파일이 잘려도 화면이 깨지지 않는다
-    SITE_JS.update(bytes=body, gz=gzip.compress(body,6), ts=int(time.time()))
     # 파일은 임시파일에 쓰고 통째로 바꿔치기(원자적). 쓰다 죽어도 이전 파일이 온전히 남는다
-    p=os.path.join(HERE,"site_data.js"); tmp=p+".tmp"
+    tmp=SITE_JS_FILE+".tmp"
+    try: f=open(tmp,"wb")
+    except Exception as e: print("[site_data] 파일 저장 실패(서빙은 메모리로 계속):",e); f=None
+    z=zlib.compressobj(6,zlib.DEFLATED,31)   # wbits=31 → gzip 형식
+    gz=[]; size=0
     try:
-        with open(tmp,"wb") as f: f.write(body)
-        os.replace(tmp,p)
-    except Exception as e:
-        print("[site_data] 파일 저장 실패(서빙은 메모리로 계속):",e)
-        try: os.remove(tmp)
-        except Exception: pass
+        for ch in _site_chunks(out,players):
+            b=ch.encode("utf-8"); size+=len(b)
+            gz.append(z.compress(b))
+            if f:
+                try: f.write(b)
+                except Exception as e:
+                    print("[site_data] 파일 저장 실패(서빙은 메모리로 계속):",e)
+                    f.close(); f=None
+                    try: os.remove(tmp)
+                    except Exception: pass
+        gz.append(z.flush())
+    except BaseException:
+        if f:
+            f.close()
+            try: os.remove(tmp)
+            except Exception: pass
+        raise
+    # 먼저 메모리에 올린다 — 서빙은 여기서만 하므로 파일이 잘려도 화면이 깨지지 않는다
+    SITE_JS.update(gz=b"".join(gz), size=size, ts=int(time.time()))
+    if f:
+        try: f.close(); os.replace(tmp,SITE_JS_FILE)
+        except Exception as e:
+            print("[site_data] 파일 저장 실패(서빙은 메모리로 계속):",e)
+            try: os.remove(tmp)
+            except Exception: pass
 
 def refresh_leaderboards():
     print("[갱신] 리더보드 수집...")
@@ -1092,7 +1233,9 @@ def refresh_leaderboards():
     with open(lbp+".tmp","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False)
     os.replace(lbp+".tmp",lbp)
     apply_leaderboards(result); FRESH["ok"]=True; rank_tick(); dau_save(); build_site_data()
-    print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}")
+    del result; mem_trim(); rss,hwm=mem_mb()
+    print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}"
+          + (f" · 메모리 {rss}MB (최고 {hwm}MB)" if rss else ""))
 
 # ── 게임서버 이름 검색 (search_players) ─────────────────────────
 # 우리 DB(수집한 유저)에 없는 사람도 **게임 전체에서** 찾아준다.
@@ -1327,7 +1470,8 @@ def magg_add(m):
     if not r: return False
     sk=_split_of(r)
     with MAGG_LOCK:
-        ids=MAGG["ids"].setdefault(day,set())
+        ids=MAGG["ids"].get(day)
+        if ids is None: ids=MAGG["ids"][day]=IdSet()
         if mid in ids: return False
         ids.add(mid)
         D=MAGG["days"].setdefault(day,{"n":0,"s":{}})
@@ -1495,9 +1639,10 @@ def magg_load():
         for d,o in got.items():
             if d<cut or not isinstance(o,dict) or not isinstance(o.get("agg"),dict): continue
             MAGG["days"][d]=o["agg"]
-            ids={x for x in str(o.get("ids") or "").split(",") if x}
-            MAGG["ids"][d]=ids; SEEN_MATCH.update(ids)
+            ids=IdSet(x for x in str(o.get("ids") or "").split(",") if x)
+            MAGG["ids"][d]=ids
             n+=o["agg"].get("n",0); seen+=len(ids)
+        SEEN_MATCH.replace(IdSet.union([SEEN_MATCH,*MAGG["ids"].values()]))
     print(f"[조합집계] 저장분 {len(MAGG['days'])}일 · {n:,}경기 로드 (경기 ID {seen:,}개는 재수집 안 함)")
 
 def magg_finish():
@@ -1542,6 +1687,13 @@ def harvest_match_ids(s, mids):
         time.sleep(0.1)
     if counted: print(f"[조합집계] 경기 {len(todo):,}건 중 {counted:,}건 새로 셈 (최근 {MAGG_DAYS}일 창)")
     return noted, s
+
+def seen_prune(current):
+    """SEEN_MATCH를 '지금 누군가의 최근 경기에 있는 것 + 집계 창(30일) 안에서 센 것'으로 줄인다.
+    ⚠️ 줄이지 않으면 2시간마다 받은 경기 ID가 재시작 전까지 끝없이 쌓인다. 모든 유저의 최근 경기 목록에서 빠진 ID는
+       다시 요청할 일이 없다(새로 들어온 유저의 기록에 있으면 한 번 더 받을 뿐 — 집계는 날짜별 ID로 중복을 막는다)."""
+    keep=IdSet(m for m in current if m in SEEN_MATCH)
+    with MAGG_LOCK: SEEN_MATCH.replace(IdSet.union([keep,*MAGG["ids"].values()]))
 
 def cache_player(pid,acc):
     """게임서버 계정 응답으로 플레이어 캐시를 통째로 갱신한다. 반환: 새 캐시 항목.
@@ -1589,7 +1741,8 @@ def sweep_names(harvest=True):
                             try: cache_player(pid,acc)
                             except Exception as e: print(f"[이름검사] 스탯 갱신 실패 {pid}:",e)   # 한 명 때문에 전체가 멈추지 않게
                         # match_history 는 오래된 것 → 최신 순이다. 뒤에서부터 순위를 매긴다.
-                        hist=(acc.get("match_state") or {}).get("match_history") or []
+                        # 수확을 안 하는 검사(부팅 직후)는 순위표가 필요 없다 — 경기 ID 26만 개(약 25MB)를 만들지 않는다.
+                        hist=((acc.get("match_state") or {}).get("match_history") or []) if harvest else []
                         # ⚠️ 변수 이름을 i 로 쓰면 안 된다 — 바깥 while 의 묶음 번호 i 를 덮어써서 같은 유저만
                         #    무한 반복했다(2026-09-26 운영에서 부팅 검사가 끝나지 않음). k 로 쓴다.
                         for k,mid in enumerate(reversed(hist)):
@@ -1614,6 +1767,7 @@ def sweep_names(harvest=True):
             #    (2026-09-26 실측: 4,000건 중 30일 안 1,746건). 모든 유저의 가장 최근 경기 → 두 번째 → … 순.
             match_ids=sorted(mrank,key=mrank.get)
             noted,s=harvest_match_ids(s, match_ids)
+            seen_prune(match_ids)
         except Exception as e:
             print("[이름검사] 경기 수확 오류:",e)
     s.close()
@@ -1621,7 +1775,9 @@ def sweep_names(harvest=True):
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
     hist_save(); dau_save(); magg_finish(); build_site_data()
-    print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건")
+    del mrank; mem_trim(); rss,hwm=mem_mb()
+    print(f"[이름검사] 완료 · 개명 {changed}건 · 경기에서 옛 이름 {noted}건 · 확인한 경기 누적 {len(SEEN_MATCH)}건"
+          + (f" · 메모리 {rss}MB (최고 {hwm}MB)" if rss else ""))
 # ── 스스로 깨워두기 ─────────────────────────────────────
 # 무료 Render는 **15분 동안 들어오는 요청이 없으면 잠든다.** 잠들면 30분 갱신·2시간 이름검사·매일 랭킹 기준선이
 # 전부 멈추고, 깨어날 때 새 인스턴스라 씨앗(8,180명)부터 다시 시작한다.
@@ -1715,7 +1871,7 @@ def live_player(pid):
         if not acc: return None
         comp=cache_player(pid,acc)
         dau_observe(pid,comp.get("ls"),comp.get("r"))
-        comp2=dict(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
+        comp2=player_out(comp); comp2["rk"]=CACHE["player_ranks"].get(pid,{})
         _prev,_ch=hist_observe(pid, comp.get("n")); comp2["prev"]=_prev
         if _ch:
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=_prev
@@ -1848,6 +2004,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 "dau_today":sum(dau_counts(game_day(time.time())).values()),
                 # 조합·티어·특성 자동 집계: auto=False 면 아직 옛 파일(표본 부족)
                 "magg":{"auto":MAGG["applied"],"days":len(MAGG["days"]),"matches":magg_total(),"built":MAGG["built"] or None}}   # 오늘 접속 유저(추적 대상 기준)
+            st["mem_mb"],st["mem_peak_mb"]=mem_mb()   # 512MB를 넘으면 Render가 재시작한다 — 최고값이 400을 넘으면 원인을 볼 것
             return self._send(200,json.dumps(st),"application/json","no-store",[("Vary","Cookie")])   # 쿠키에 따라 내용이 다르다 — 캐시가 섞지 않게
         if path=="/api/dau":
             # 오늘 접속 유저(서버별) — 사이트 이용자 누구나. 점검 게이트 아래에 있어야 한다.
@@ -1925,7 +2082,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._send(404,json.dumps({"ok":False,"player":None}))
             with LOCK:
                 p=CACHE["players"].get(pid)
-                q=(dict(p) if p else None)
+                q=(player_out(p) if p else None)
                 if q is not None: q["rk"]=CACHE["player_ranks"].get(pid,{})
             return self._send(200 if q else 404,json.dumps({"ok":bool(q),"player":q}))
         if path.startswith("/api/player/"):
@@ -1945,9 +2102,14 @@ class H(http.server.BaseHTTPRequestHandler):
         #    이제 화면에 실제로 필요한 것만 허용한다(화이트리스트).
         fn="index.html" if path in ("/","") else path.lstrip("/")
         if fn=="site_data.js":
-            # 파일이 아니라 메모리에서 준다 (요청마다 3.9MB를 읽지 않는다)
-            if not SITE_JS["bytes"]: return self._send(503,"data not ready","text/plain")
-            return self._send(200,SITE_JS["bytes"],"application/javascript","no-cache")
+            # 메모리의 gzip본을 그대로 준다(5.3MB → 2MB 전송). 브라우저는 모두 gzip을 받는다.
+            # gzip을 안 받는 클라이언트(드묾)에게만 그 자리에서 풀어 준다.
+            gz=SITE_JS["gz"]
+            if not gz: return self._send(503,"data not ready","text/plain")
+            if "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+                return self._send(200,gz,"application/javascript","no-cache",
+                                  [("Content-Encoding","gzip"),("Content-Length",str(len(gz))),("Vary","Accept-Encoding")])
+            return self._send(200,gzip.decompress(gz),"application/javascript","no-cache",[("Vary","Accept-Encoding")])
         ALLOWED={"index.html":"text/html","i18n.js":"application/javascript",
                  "favicon.ico":"image/x-icon","robots.txt":"text/plain"}
         ct=ALLOWED.get(fn)
@@ -2009,6 +2171,7 @@ def main():
     load_disk()
     rank_tick()          # 재시작이면 저장돼 있던 오늘 기준선을 다시 읽는다(새 기준선은 진짜 갱신 뒤에)
     build_site_data()
+    mem_trim()
     threading.Thread(target=boot_refresh,daemon=True).start()   # 씨앗 → 실데이터 (1~2분)
     threading.Thread(target=scheduler,daemon=True).start()
     threading.Thread(target=sweep_scheduler,daemon=True).start()
