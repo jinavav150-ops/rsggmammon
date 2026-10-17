@@ -107,7 +107,7 @@ C={"level":"52072645","mvp":"86875100","wins":"71495125","matches":"32190379","k
 "final":"85762019","fire":"85842040","playtime":"85762515","pro_rating":"111239832",
 "casual_rating":"15599528","pro_matches":"113488083"}
 C_LASTSESS="76774339"   # LastSessionTimestamp — 마지막 접속일(게임 하루 시작 시각, KST 09:00 경계)
-C_PREVSESS="76774330"   # PreviousSessionTimestamp — 그 전 접속일. 어제 오고 오늘 또 온 사람을 어제에도 세는 데 쓴다
+C_PREVSESS="76774330"   # PreviousSessionTimestamp — 직전 **세션** 시각(같은 날일 수 있다). 어제 오고 오늘 한 번 온 사람을 어제에도 세는 데 쓴다
 H_PT="85762515"; H_RT="15599528"; H_VIC="77974177"; H_PRE="106323940"; H_PERK="55097452"; H_SKIN="56735408"
 
 # ── 프로토콜 ─────────────────────────────────────────
@@ -750,13 +750,17 @@ import calendar
 DAU_KEEP_DAYS=60
 DAU_KEY="rsgg:dau"
 DAU_FILE=os.path.join(DATA,"dau.json")
-DAU={"days":{},"region":{},"saved":{},"updated":0,"since":"","full":set(),"full_since":""}   # days {하루번호: set(pid)} · region {pid: 지역} · saved {"YYYY-MM-DD": {지역: n}} · since 집계 시작일
+DAU={"days":{},"region":{},"saved":{},"updated":0,"since":"","covered":set(),"full_since":""}   # days {하루번호: set(pid)} · region {pid: 지역} · saved {"YYYY-MM-DD": {지역: n}} · since 집계 시작일
 # ── 정확히 못 센 날 가려내기 ──
-# 직전 접속일(C_PREVSESS)도 같이 보므로, 하루 D에 온 사람은 **D+1이 끝나기 전까지** 마지막 접속일이나 직전 접속일 중
-# 하나가 D로 남는다. 그래서 D+1 동안 **추적 유저 전원**을 한 번이라도 훑으면(full 표시) D는 정확하다.
-# D+1에 그런 훑기가 없었으면(서버가 잠들었거나 죽었거나 재배포 직후 보충 중) D는 정확하지 않다 → 화면에서 숫자를 뺀다.
-# full 표시는 이 기능이 생긴 뒤(full_since)부터만 있다. 그 전 날짜 중 서버 중단을 확인한 날은 아래 목록으로 따진다.
+# 하루 D에 온 사람은 D가 끝날 때까지 마지막 접속일이 D로 남는다. 그래서 **D가 끝나기 직전(마지막 2.5시간)에
+# 추적 유저 전원을 훑었으면**(covered) D는 평소대로 정확하다. 그런 훑기가 없던 날(잠듦·재시작 뒤 보충 중)은
+# 지난 뒤에 되살릴 수 없다 → 화면에서 숫자를 뺀다.
+# ⚠️ 직전 접속(C_PREVSESS)으로는 되살리지 못한다. 10-18 실측 9,680명 중 6,044명은 더 이른 날, 3,633명은 **같은 날**이었다
+#    — 하루 단위가 아니라 직전 세션이라, 다음 날 두 번 이상 들어온 사람은 그 전날 흔적이 지워진다. 실제로 온 날만 더하므로
+#    하한값을 조금 올리는 데만 쓴다.
+# covered 표시는 이 판정이 생긴 뒤(full_since)부터만 있다. 그 전 날짜 중 서버 중단을 확인한 날은 아래 목록으로 따진다.
 DAU_GAP_SEED={"2026-10-15","2026-10-16"}   # 10-15 23:58 ~ 10-17 11:02 서버가 잠들었다(인수인계 1-1장)
+DAU_END_WINDOW=int(2.5*3600)                # 하루 끝 몇 초 전까지 끝난 전원 훑기를 '하루 끝 확인'으로 치나(훑기 주기 2시간 + 여유)
 DAU_PS={"lt":0,"eq":0,"none":0}            # 직전 접속일 관측 통계(이번 훑기) — 뜻이 '그 전 접속일'인지 로그로 확인
 # ⚠️ since(집계를 시작한 날) 이전 날짜의 숫자는 **하한값**이다 — 그날 마지막으로 접속하고 그 뒤 안 들어온
 #    사람만 남아 있어서(그 후 다시 접속한 사람은 최신 날짜로 옮겨감) 실제보다 작다. 화면에 "≥"로 표시한다.
@@ -786,14 +790,19 @@ def dau_observe_acc(pid,acc):
     cc=(acc.get("counters_state") or {}).get("counter_collection",{}) or {}
     v=lambda k:(cc.get(k) or {}).get("value")
     dau_observe(pid,v(C_LASTSESS),(acc.get("regions") or [""])[0],v(C_PREVSESS))
-def dau_mark_full(d):
-    with DAU_LOCK: DAU["full"].add(game_day_label(d))
+def dau_mark_full(t):
+    """전원 훑기가 시각 t에 끝났다. 그 하루가 끝나기 DAU_END_WINDOW 안이면 그날을 '하루 끝 확인'으로 표시."""
+    d=game_day(t)
+    if (d+1)*86400-t<=DAU_END_WINDOW:
+        with DAU_LOCK: DAU["covered"].add(game_day_label(d))
+        return True
+    return False
 def dau_gap(d,today):
-    """하루 번호 d를 정확히 못 셌나. 어제·오늘은 아직 판단하지 않는다(어제는 오늘 훑기로 채워지는 중)."""
-    if d+1>=today: return False
-    nxt=game_day_label(d+1)
-    with DAU_LOCK: full=DAU["full"]; since=DAU["full_since"]
-    if game_day_label(d) in DAU_GAP_SEED or (since and nxt>=since): return nxt not in full
+    """하루 번호 d를 정확히 못 셌나. 끝난 날만 판단한다(오늘은 아직 진행 중)."""
+    if d>=today: return False
+    lab=game_day_label(d)
+    with DAU_LOCK: covered=lab in DAU["covered"]; since=DAU["full_since"]
+    if lab in DAU_GAP_SEED or (since and lab>=since): return not covered
     return False
 def dau_counts(d):
     """하루 번호 → {지역: 인원}. 실시간 집합과 저장된 집계 중 지역별로 큰 쪽."""
@@ -820,8 +829,8 @@ def dau_save():
         DAU["saved"]={k:DAU["saved"][k] for k in keep}
         if not DAU["since"]: DAU["since"]=game_day_label(today)
         if not DAU["full_since"]: DAU["full_since"]=game_day_label(today)
-        DAU["full"]={k for k in DAU["full"] if k>=game_day_label(today-DAU_KEEP_DAYS)}
-        blob=json.dumps({"since":DAU["since"],"days":DAU["saved"],"full":sorted(DAU["full"]),
+        DAU["covered"]={k for k in DAU["covered"] if k>=game_day_label(today-DAU_KEEP_DAYS)}
+        blob=json.dumps({"since":DAU["since"],"days":DAU["saved"],"covered":sorted(DAU["covered"]),
                          "full_since":DAU["full_since"]},separators=(",",":"))
     if _rk_redis(): redis_cmd("SET",DAU_KEY,blob)
     else:
@@ -836,15 +845,17 @@ def dau_load():
         except Exception: raw=None
     try: saved=json.loads(raw) if raw else {}
     except Exception: saved={}
-    since=""; full=[]; full_since=""
-    if isinstance(saved,dict) and "days" in saved:     # 새 형식 {"since":..., "days":{...}, "full":[...], "full_since":...}
-        since=str(saved.get("since") or ""); full=saved.get("full") or []; full_since=str(saved.get("full_since") or "")
+    since=""; covered=[]; full_since=""
+    # 새 형식 {"since":..., "days":{...}, "covered":[...], "full_since":...}
+    # ⚠️ 10-18 03:06~ 잠깐 배포된 판의 "full"(다음 날 훑기 표시)은 뜻이 틀려서 읽지 않는다
+    if isinstance(saved,dict) and "days" in saved:
+        since=str(saved.get("since") or ""); covered=saved.get("covered") or []; full_since=str(saved.get("full_since") or "")
         saved=saved.get("days") or {}
     if isinstance(saved,dict):
         with DAU_LOCK:
             DAU["saved"]={k:v for k,v in saved.items() if isinstance(v,dict)}
             DAU["since"]=since or (min(DAU["saved"]) if DAU["saved"] else "")
-            DAU["full"]|={str(x) for x in full}
+            DAU["covered"]|={str(x) for x in covered}
             DAU["full_since"]=full_since or DAU["full_since"]
     print(f"[접속자] 저장된 일별 집계 {len(DAU['saved'])}일 로드")
 def dau_report(n=30):
@@ -1816,7 +1827,7 @@ def sweep_names(harvest=True):
     with LOCK:
         for pid,rec in NAME_HIST.items():
             if pid in CACHE["players"]: CACHE["players"][pid]["prev"]=rec.get("prev",[])
-    if full: dau_mark_full(game_day(time.time()))
+    if full and dau_mark_full(time.time()): print(f"[접속자] {game_day_label(game_day(time.time()))} 하루 끝 전원 확인 — 정확히 센 날로 표시")
     with DAU_LOCK: ps=dict(DAU_PS)
     print(f"[접속자] 직전 접속일: 더 이른 날 {ps['lt']} · 같은 날 {ps['eq']} · 없음 {ps['none']}")
     hist_save(); dau_save(); magg_finish(); build_site_data()
