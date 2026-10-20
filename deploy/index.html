@@ -125,6 +125,13 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .dbar>i{display:block;height:100%;background:var(--acc);border-radius:3px}
 .dtab td,.dtab th{font-variant-numeric:tabular-nums} .dtab tr.today td{font-weight:800}
 .dnote{font-size:11.5px;color:var(--mut);line-height:1.6;margin:2px 4px 12px}
+.rkrow{padding:11px 14px;border-bottom:1px solid var(--line)} .rkrow:last-child{border-bottom:0}
+.rkhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rkdot{width:10px;height:10px;border-radius:50%;flex:none}
+.rkfrom{font-size:12px}
+.rknum{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:700}
+.rkdivs{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:7px;font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
+.rkdivs b{color:var(--tx);font-weight:700}
 .sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sect-t>.ic{flex:none}
 #matchInfo{flex:1 1 auto;min-width:0}
@@ -310,7 +317,7 @@ window.setSeason=v=>{
   curSeason=v; B=SD().boards; BM=SD().board_meta;
   try{localStorage.setItem('rsgg_season',v);}catch(e){}
   // 고른 시즌에 없는 보드를 보고 있었으면 프로/캐주얼로 되돌린다
-  if(!SEASONLESS.includes(curBoard) && !B[curBoard]){
+  if(!SEASONLESS.includes(curBoard) && curBoard!=='ranks' && !B[curBoard]){
     curBoard = B['pro']?'pro':'casual';
     location.hash='#/board/'+encodeURIComponent(curBoard);   // 해시도 맞춰야 render()가 안 되돌린다
   }
@@ -415,6 +422,7 @@ function tabsHtml(){
   let modes=['pro','pro_prev','casual'].filter(m=>B[m]);
   let h='<div class="tabs">';
   for(const m of modes) h+=`<div class="tab ${curBoard===m?'on':''}" onclick="goBoard('${m}')">${boardLabel(m)}</div>`;
+  if(hasRanks()) h+=`<div class="tab ${curBoard==='ranks'?'on':''}" onclick="goBoard('ranks')">${t('tab_ranks')}</div>`;
   if(hasTiers()) h+=`<div class="tab ${curBoard==='tiers'?'on':''}" onclick="goBoard('tiers')">${t('tab_tiers')}</div>`;
   if(hasComps()) h+=`<div class="tab ${curBoard==='comps'?'on':''}" onclick="goBoard('comps')">${t('tab_comps')}</div>`;
   h+=`<div class="tab ${curBoard==='renamed'?'on':''}" onclick="goBoard('renamed')">${t('tab_renamed')}</div>`;
@@ -1110,6 +1118,55 @@ function paintDau(){
   app.innerHTML=h;
 }
 
+// ── 랭크 분포 ──────────────────────────────────────────
+// 서버가 리더보드 점수 전원을 게임 데이터의 리그·디비전 기준(D.leagues)으로 나눠 센 표(SD().rank_dist)를 그린다.
+// 프로는 계정 점수 하나, 캐주얼은 캐릭터마다 점수가 따로 있다 — 'best'는 유저마다 가장 높은 캐릭터 점수.
+let rankMode='pro', rankSub='';
+const LGC={Bronze:'#cd8248',Silver:'#a9b6c6',Gold:'#e8b923',Platinum:'#8fd8ec',Diamond:'#6aa8ff',Sapphire:'#4f6bed',Ectonium:'#00ac83',
+  Brawler:'#a07a5a',Master:'#9b6bd6',Elite:'#4a86ff',Champion:'#e8b923',Legend:'#ff7a45'};
+const ROMAN=['','I','II','III','IV','V'];
+function hasRanks(){const R=SD().rank_dist; return !!(D.leagues&&R&&Object.keys(R).length);}
+window.setRankMode=m=>{rankMode=m;rankSub='';render();};
+window.setRankSub=v=>{rankSub=v;render();};
+function lgName(k){const n=(D.leagues&&D.leagues.names)||{};return (n[LANG]||n.en||{})[k]||k;}
+function renderRanks(){
+  const RD=SD().rank_dist||{}, LG=D.leagues||{};
+  let h=tabsHtml();
+  const proLabs=['pro','pro_prev'].filter(l=>RD[l]);
+  const heroLabs=SD().hero_labels.filter(l=>RD[l]);
+  const modes=[]; if(proLabs.length) modes.push('pro'); if(RD.best||heroLabs.length) modes.push('casual');
+  if(!modes.includes(rankMode)) rankMode=modes[0]||'pro';
+  const opts=rankMode==='pro'
+    ? proLabs.map(l=>[l, l==='pro'?`${t('tab_pro')} ${seasonLabel((BM.pro||{}).season||curSeason)}`:boardLabel(l)])
+    : (RD.best?[['best',t('rank_best')]]:[]).concat(heroLabs.map(l=>[l,hk(l)]));
+  const lab=opts.some(o=>o[0]===rankSub)?rankSub:((opts[0]||[])[0]||'');
+  h+='<div class="tabs" style="margin-top:-4px">'+modes.map(m=>`<div class="tab ${rankMode===m?'on':''}" onclick="setRankMode('${m}')">${boardLabel(m)}</div>`).join('');
+  if(opts.length>1) h+='<select class="tab" onchange="setRankSub(this.value)" style="min-width:150px">'+opts.map(([v,n])=>`<option value="${v}" ${v===lab?'selected':''}>${esc(n)}</option>`).join('')+'</select>';
+  h+='</div>';
+  const R=RD[lab];
+  if(!R||!LG[rankMode]){ h+=`<div class="card"><div class="empty" style="padding:20px">${t('no_result')}</div></div>`; app.innerHTML=h; return; }
+  const tot=R.n||0, leagues=[...LG[rankMode]].reverse();   // 높은 리그부터
+  const sumOf=lg=>lg.divs.reduce((a,d)=>a+(R.c[lg.key+'.'+d.n]||0),0);
+  const max=Math.max(1,...leagues.map(sumOf));
+  const cur=(opts.find(o=>o[0]===lab)||[])[1]||'';
+  h+=`<div class="sect-t">${t('rank_title')}<span class="muted" style="font-size:12px;font-weight:400">${esc(cur)} · ${t('total_n',{n:tot.toLocaleString()})}</span></div><div class="card">`;
+  for(const lg of leagues){
+    const n=sumOf(lg), pct=tot?n/tot*100:0, col=LGC[lg.key]||'var(--acc)';
+    const mins=lg.divs.map(d=>d.min).filter(x=>x!=null), from=mins.length?Math.min(...mins):null;
+    const bottom=lg.divs.some(d=>d.min==null);   // 맨 아래 리그 — 기준점 없음
+    h+=`<div class="rkrow"><div class="rkhead"><span class="rkdot" style="background:${col}"></span><b>${esc(lgName(lg.key))}</b>`
+      +`<span class="muted rkfrom">${bottom?'':from!=null?from.toLocaleString()+'+':''}</span>`
+      +`<span class="rknum">${n.toLocaleString()}<span class="muted" style="font-weight:400"> · ${pct.toFixed(1)}%</span></span></div>`
+      +`<div class="dbar"><i style="width:${(n/max*100).toFixed(1)}%;background:${col}"></i></div>`;
+    if(lg.divs.length>1) h+='<div class="rkdivs">'+[...lg.divs].sort((a,b)=>a.n-b.n)
+      .map(d=>`<span title="${d.min!=null?d.min.toLocaleString()+'+':''}">${ROMAN[d.n]||d.n} <b>${(R.c[lg.key+'.'+d.n]||0).toLocaleString()}</b></span>`).join('')+'</div>';
+    h+='</div>';
+  }
+  h+='</div>';
+  h+=`<div class="dnote">${t(rankMode==='pro'?'rank_note_pro':'rank_note_casual')}<br>${t('rank_note_src',{v:esc(String(LG.source||'').replace(/^원본APK_/,''))})}</div>`;
+  app.innerHTML=h;
+}
+
 function render(){
   hidePerkTip();
   // ⚠️ 잘린 퍼센트 인코딩(#/search/%)이면 decodeURIComponent가 던진다. 그러면 이 화면 전환이 통째로 무시된다.
@@ -1123,6 +1180,7 @@ function render(){
   if(curBoard==='comps') return renderComps();
   if(curBoard==='renamed') return renderRenamed();
   if(curBoard==='dau') return renderDau();
+  if(curBoard==='ranks') return renderRanks();
   if(!B[curBoard]) curBoard = B['pro']?'pro':(B['casual']?'casual':Object.keys(B)[0]||'pro');
   renderBoard();
 }

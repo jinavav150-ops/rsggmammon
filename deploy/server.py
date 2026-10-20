@@ -94,6 +94,28 @@ REGION_KR={"ap-northeast-2":"한국","eu-central-1":"유럽","us-east-1":"미국
 REGION_REV={v:k for k,v in REGION_KR.items()}
 LEVEL_KR={"85682979":"퍼시피카","34624828":"항구","57585175":"하늘공원","36077481":"균열 관측소","41172989":"용광로"}
 TN=json.load(open(os.path.join(DATA,"tech_names.json"),encoding="utf-8"))
+# 랭크 리그·디비전 기준표(make_leagues.py가 게임 APK에서 뽑는다). '랭크 분포' 탭이 리더보드 점수를 이걸로 나눈다
+try: LEAGUES=json.load(open(os.path.join(DATA,"leagues.json"),encoding="utf-8"))
+except Exception as e: LEAGUES=None; print("[랭크분포] leagues.json 읽기 실패:",e)
+import bisect
+def _league_steps(mode):
+    """[(기준점수, 리그키, 디비전번호)] 오름차순. 맨 아래 디비전(기준 없음)은 -무한대."""
+    out=[]
+    for lg in (LEAGUES or {}).get(mode) or []:
+        for d in lg["divs"]: out.append((-10**9 if d["min"] is None else d["min"], lg["key"], d["n"]))
+    return sorted(out)
+LEAGUE_STEPS={m:_league_steps(m) for m in ("pro","casual")}
+def rank_hist(mode,scores):
+    """점수 목록 → {"n":인원, "c":{"리그키.디비전": 인원}}. 프로=계정 점수, 캐주얼=캐릭터 점수."""
+    st=LEAGUE_STEPS.get(mode)
+    if not st: return None
+    keys=[x[0] for x in st]; c={}; n=0
+    for sc in scores:
+        try: v=float(sc)
+        except (TypeError,ValueError): continue
+        _,lk,dn=st[max(0,bisect.bisect_right(keys,v)-1)]
+        k=f"{lk}.{dn}"; c[k]=c.get(k,0)+1; n+=1
+    return {"n":n,"c":c}
 try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8"))
 except Exception: PERK_KR={}
 try: COMPS=json.load(open(os.path.join(DATA,"comps.json"),encoding="utf-8"))
@@ -1153,8 +1175,24 @@ def apply_leaderboards(lb):
                 pid=e["player_id"]; ordered.append(pid)
                 ranks.setdefault(pid,{}).setdefault(season,{})[lab]=[e["rank"],e["score"]]
             boards[lab]=ordered
+        # 랭크 분포: 프로 보드는 계정 점수, 캐릭터 보드는 캐릭터 캐주얼 점수, best = 유저마다 가장 높은 캐릭터 점수
+        rdist={}; best={}
+        for name,mb in (by_season.get(season) or {}).items():
+            mode="pro" if mb["kind"] in ("pro","pro_prev") else ("casual" if mb["kind"]=="hero" else None)
+            if not mode: continue
+            sc=[e["score"] for e in mb["entries"]]
+            h=rank_hist(mode,sc)
+            if h: rdist[label_of(mb["kind"],mb["label"])]=h
+            if mode=="casual":
+                for e in mb["entries"]:
+                    try: v=float(e["score"])
+                    except (TypeError,ValueError): continue
+                    if v>best.get(e["player_id"],-1e18): best[e["player_id"]]=v
+        if best:
+            h=rank_hist("casual",best.values())
+            if h: rdist["best"]=h
         sdata[season]={"boards":boards,"board_meta":meta,
-                       "board_labels":blabels,"hero_labels":hlabels}
+                       "board_labels":blabels,"hero_labels":hlabels,"rank_dist":rdist}
     with LOCK:
         CACHE.update({"seasons":seasons,"sdata":sdata,"player_ranks":ranks,
                       "last_refresh":int(time.time())})
@@ -1207,6 +1245,7 @@ def build_site_data():
             "seasons":CACHE["seasons"],"sdata":CACHE["sdata"],
             "generated_count":len(players),"last_refresh":CACHE["last_refresh"]}
     # 랭킹 변동(LOCK 밖에서 — rank_delta가 스스로 LOCK을 잡는다)
+    if LEAGUES: out["leagues"]=LEAGUES
     out["rdelta"]=rank_delta()
     out["rbase"]={"day":RANK["base_day"],"days":len(RANK["days"])}
     # 파일은 임시파일에 쓰고 통째로 바꿔치기(원자적). 쓰다 죽어도 이전 파일이 온전히 남는다
