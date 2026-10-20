@@ -132,6 +132,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .rknum{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:700}
 .rkdivs{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:7px;font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
 .rkdivs b{color:var(--tx);font-weight:700}
+.tab.on .muted{color:inherit;opacity:.85}
 .sect-t{font-weight:800;font-size:15px;margin:18px 4px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sect-t>.ic{flex:none}
 #matchInfo{flex:1 1 auto;min-width:0}
@@ -1121,13 +1122,14 @@ function paintDau(){
 // ── 랭크 분포 ──────────────────────────────────────────
 // 서버가 리더보드 점수 전원을 게임 데이터의 리그·디비전 기준(D.leagues)으로 나눠 센 표(SD().rank_dist)를 그린다.
 // 프로는 계정 점수 하나, 캐주얼은 캐릭터마다 점수가 따로 있다 — 'best'는 유저마다 가장 높은 캐릭터 점수.
-let rankMode='pro', rankSub='';
+let rankMode='pro', rankSub='', rankReg='';   // rankReg: '' = 전체 서버
 const LGC={Bronze:'#cd8248',Silver:'#a9b6c6',Gold:'#e8b923',Platinum:'#8fd8ec',Diamond:'#6aa8ff',Sapphire:'#4f6bed',Ectonium:'#00ac83',
   Brawler:'#a07a5a',Master:'#9b6bd6',Elite:'#4a86ff',Champion:'#e8b923',Legend:'#ff7a45'};
 const ROMAN=['','I','II','III','IV','V'];
 function hasRanks(){const R=SD().rank_dist; return !!(D.leagues&&R&&Object.keys(R).length);}
 window.setRankMode=m=>{rankMode=m;rankSub='';render();};
 window.setRankSub=v=>{rankSub=v;render();};
+window.setRankReg=v=>{rankReg=v;render();};
 function lgName(k){const n=(D.leagues&&D.leagues.names)||{};return (n[LANG]||n.en||{})[k]||k;}
 function renderRanks(){
   const RD=SD().rank_dist||{}, LG=D.leagues||{};
@@ -1143,12 +1145,17 @@ function renderRanks(){
   h+='<div class="tabs" style="margin-top:-4px">'+modes.map(m=>`<div class="tab ${rankMode===m?'on':''}" onclick="setRankMode('${m}')">${boardLabel(m)}</div>`).join('');
   if(opts.length>1) h+='<select class="tab" onchange="setRankSub(this.value)" style="min-width:150px">'+opts.map(([v,n])=>`<option value="${v}" ${v===lab?'selected':''}>${esc(n)}</option>`).join('')+'</select>';
   h+='</div>';
-  const R=RD[lab];
+  const RA=RD[lab];
+  // 서버별: 인원 많은 순. "?" = 아직 프로필을 못 받아 서버를 모르는 유저(전체에만 들어간다)
+  const regs=RA&&RA.r?Object.keys(RA.r).filter(r=>r!=='?').sort((a,b)=>RA.r[b].n-RA.r[a].n):[];
+  if(rankReg&&!regs.includes(rankReg)) rankReg='';
+  if(regs.length>1) h+='<div class="tabs" style="margin-top:-4px">'+['',...regs].map(r=>`<div class="tab ${rankReg===r?'on':''}" onclick="setRankReg('${r}')">${r?esc(regionName(r)||r):t('all_regions')}${r?` <span class="muted" style="font-weight:400">${RA.r[r].n.toLocaleString()}</span>`:''}</div>`).join('')+'</div>';
+  const R=RA&&(rankReg?RA.r[rankReg]:RA);
   if(!R||!LG[rankMode]){ h+=`<div class="card"><div class="empty" style="padding:20px">${t('no_result')}</div></div>`; app.innerHTML=h; return; }
   const tot=R.n||0, leagues=[...LG[rankMode]].reverse();   // 높은 리그부터
   const sumOf=lg=>lg.divs.reduce((a,d)=>a+(R.c[lg.key+'.'+d.n]||0),0);
   const max=Math.max(1,...leagues.map(sumOf));
-  const cur=(opts.find(o=>o[0]===lab)||[])[1]||'';
+  const cur=((opts.find(o=>o[0]===lab)||[])[1]||'')+(rankReg?' · '+(regionName(rankReg)||rankReg):'');
   h+=`<div class="sect-t">${t('rank_title')}<span class="muted" style="font-size:12px;font-weight:400">${esc(cur)} · ${t('total_n',{n:tot.toLocaleString()})}</span></div><div class="card">`;
   for(const lg of leagues){
     const n=sumOf(lg), pct=tot?n/tot*100:0, col=LGC[lg.key]||'var(--acc)';
@@ -1163,7 +1170,9 @@ function renderRanks(){
     h+='</div>';
   }
   h+='</div>';
-  h+=`<div class="dnote">${t(rankMode==='pro'?'rank_note_pro':'rank_note_casual')}<br>${t('rank_note_src',{v:esc(String(LG.source||'').replace(/^원본APK_/,''))})}</div>`;
+  const unk=(RA.r&&RA.r['?'])?RA.r['?'].n:0;
+  h+=`<div class="dnote">${t(rankMode==='pro'?'rank_note_pro':'rank_note_casual')}<br>${t('rank_note_src',{v:esc(String(LG.source||'').replace(/^원본APK_/,''))})}`
+    +(unk&&!rankReg?`<br>${t('rank_unknown',{n:unk.toLocaleString()})}`:'')+`</div>`;
   app.innerHTML=h;
 }
 

@@ -105,17 +105,20 @@ def _league_steps(mode):
         for d in lg["divs"]: out.append((-10**9 if d["min"] is None else d["min"], lg["key"], d["n"]))
     return sorted(out)
 LEAGUE_STEPS={m:_league_steps(m) for m in ("pro","casual")}
-def rank_hist(mode,scores):
-    """점수 목록 → {"n":인원, "c":{"리그키.디비전": 인원}}. 프로=계정 점수, 캐주얼=캐릭터 점수."""
+def rank_hist(mode,pairs,reg):
+    """[(유저, 점수)] → {"n":인원, "c":{"리그키.디비전": 인원}, "r":{서버: {"n","c"}}}.
+    프로=계정 점수, 캐주얼=캐릭터 점수. 서버는 프로필의 지역(reg) — 아직 프로필을 못 받은 유저는 "?"."""
     st=LEAGUE_STEPS.get(mode)
     if not st: return None
-    keys=[x[0] for x in st]; c={}; n=0
-    for sc in scores:
+    keys=[x[0] for x in st]; out={"n":0,"c":{},"r":{}}
+    for pid,sc in pairs:
         try: v=float(sc)
         except (TypeError,ValueError): continue
         _,lk,dn=st[max(0,bisect.bisect_right(keys,v)-1)]
-        k=f"{lk}.{dn}"; c[k]=c.get(k,0)+1; n+=1
-    return {"n":n,"c":c}
+        k=f"{lk}.{dn}"
+        for h in (out, out["r"].setdefault(reg.get(pid) or "?",{"n":0,"c":{}})):
+            h["c"][k]=h["c"].get(k,0)+1; h["n"]+=1
+    return out
 try: PERK_KR=json.load(open(os.path.join(DATA,"perk_names.json"),encoding="utf-8"))
 except Exception: PERK_KR={}
 try: COMPS=json.load(open(os.path.join(DATA,"comps.json"),encoding="utf-8"))
@@ -1161,6 +1164,10 @@ def apply_leaderboards(lb):
     if not seasons:
         seasons=[lb.get("season") or "?"]; by_season={seasons[0]: lb.get("boards") or {}}
     sdata={}; ranks={}
+    # 랭크 분포를 서버(지역)별로도 나눈다 — 프로필의 지역, 없으면 접속자 집계가 본 지역
+    with LOCK: reg={pid:p.get("r") for pid,p in CACHE["players"].items() if p.get("r")}
+    with DAU_LOCK:
+        for pid,r in DAU["region"].items(): reg.setdefault(pid,r)
     for season in seasons:
         boards={}; meta={}; blabels=[]; hlabels=[]
         for name,mb in (by_season.get(season) or {}).items():
@@ -1180,8 +1187,7 @@ def apply_leaderboards(lb):
         for name,mb in (by_season.get(season) or {}).items():
             mode="pro" if mb["kind"] in ("pro","pro_prev") else ("casual" if mb["kind"]=="hero" else None)
             if not mode: continue
-            sc=[e["score"] for e in mb["entries"]]
-            h=rank_hist(mode,sc)
+            h=rank_hist(mode,[(e["player_id"],e["score"]) for e in mb["entries"]],reg)
             if h: rdist[label_of(mb["kind"],mb["label"])]=h
             if mode=="casual":
                 for e in mb["entries"]:
@@ -1189,7 +1195,7 @@ def apply_leaderboards(lb):
                     except (TypeError,ValueError): continue
                     if v>best.get(e["player_id"],-1e18): best[e["player_id"]]=v
         if best:
-            h=rank_hist("casual",best.values())
+            h=rank_hist("casual",best.items(),reg)
             if h: rdist["best"]=h
         sdata[season]={"boards":boards,"board_meta":meta,
                        "board_labels":blabels,"hero_labels":hlabels,"rank_dist":rdist}
