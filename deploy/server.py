@@ -924,6 +924,7 @@ def load_disk():
     hist_seed()
     rank_load()
     dau_load()
+    regions_load()                     # 유저→서버 표(재배포 직후에도 서버별 랭크 분포가 맞게)
     magg_load(); magg_apply()          # 저장된 30일 집계가 있으면 부팅 즉시 최신 조합으로
     hist_sync_players()
 
@@ -1154,6 +1155,58 @@ def attach_archived_pro(seasons,result):
             "season":code,"range":a.get("range") or pro_range(code),"final":True,"size":a.get("size") or len(ids),
             "entries":[{"rank":i+1,"player_id":p,"score":s2} for i,(p,s2) in enumerate(zip(ids,a.get("scores") or []))]}
 
+# ── 유저별 서버(지역) 보관 ────────────────────────────────
+# 서버별 랭크 분포는 유저 프로필의 지역(r)으로 나눈다. 그런데 재배포하면 프로필이 씨앗(8,180명)뿐이라
+# 나머지 유저는 프로필을 다시 받을 때까지(1~2시간) 서버를 몰라 '?'로 빠졌다(10-20 실측: 아시아 골드 38명 → 채워진 뒤 123명).
+# 지역은 거의 안 바뀌므로 유저→지역 표를 Redis에 두고 부팅 때 읽는다. 새 프로필의 지역이 늘 이긴다.
+REGIONS_KEY="rsgg:regions"
+REGIONS_FILE=os.path.join(DATA,"regions.json")
+REGIONS={"map":{},"ready":False,"dirty":False,"saved":0,"saved_n":0}
+def regions_load():
+    """저장된 유저→지역 표를 읽어 지금 표에 합친다. 못 읽으면 ready=False — 그 상태로는 저장하지 않는다(덮어쓰기 방지)."""
+    raw=None
+    if _rk_redis():
+        raw=redis_cmd("GET",REGIONS_KEY,fail=REDIS_FAIL)
+        if raw is REDIS_FAIL: REGIONS["ready"]=False; print("[지역] Redis에서 못 읽음 — 다음 저장 때 다시 읽는다"); return
+    else:
+        try: raw=open(REGIONS_FILE,encoding="utf-8").read()
+        except Exception: raw=None
+    got=_rk_unpack(raw) if raw else {}
+    if raw and got is None: REGIONS["ready"]=False; print("[지역] 저장본이 깨져 있어 저장 보류"); return
+    m={}
+    for r,pids in (got or {}).items():
+        for pid in pids: m[pid]=r
+    stored=len(m); m.update(REGIONS["map"]); REGIONS["map"]=m; REGIONS["ready"]=True
+    REGIONS["saved_n"]=stored; REGIONS["saved"]=int(time.time())   # 저장본과 같은 만큼은 다시 쓸 필요 없다
+    print(f"[지역] 저장된 유저 지역 {len(m):,}명 로드")
+def regions_save(force=False):
+    """바뀐 게 있으면 저장(30분 갱신마다 불린다). 수백 KB라 2시간에 한 번까지만, 새 유저가 많으면 바로."""
+    if not REGIONS["ready"]:
+        regions_load()
+        if not REGIONS["ready"]: return
+    if not (REGIONS["dirty"] or force): return
+    grew=len(REGIONS["map"])-REGIONS["saved_n"]
+    if not force and grew<200 and time.time()-REGIONS["saved"]<7200: return
+    by={}
+    for pid,r in REGIONS["map"].items(): by.setdefault(r,[]).append(pid)
+    blob=_rk_pack(by)
+    if _rk_redis():
+        if redis_cmd("SET",REGIONS_KEY,blob,fail=REDIS_FAIL) is REDIS_FAIL: print("[지역] Redis 저장 실패 — 다음 갱신에서 다시"); return
+    else:
+        try:
+            with open(REGIONS_FILE+".tmp","w",encoding="utf-8") as f: f.write(blob)
+            os.replace(REGIONS_FILE+".tmp",REGIONS_FILE)
+        except Exception as e: print("[지역] 파일 저장 실패:",e); return
+    REGIONS["dirty"]=False; REGIONS["saved"]=int(time.time()); REGIONS["saved_n"]=len(REGIONS["map"])
+    print(f"[지역] 유저 지역 {len(REGIONS['map']):,}명 저장 ({len(blob)//1024}KB)")
+def regions_merge():
+    """저장본 + 접속자 집계가 본 지역 + 프로필 지역(가장 최신)을 합친 표. 바뀌었으면 dirty."""
+    reg=dict(REGIONS["map"])
+    with DAU_LOCK: reg.update(DAU["region"])
+    with LOCK: reg.update({pid:p["r"] for pid,p in CACHE["players"].items() if p.get("r")})
+    if reg!=REGIONS["map"]: REGIONS["map"]=reg; REGIONS["dirty"]=True
+    return reg
+
 def apply_leaderboards(lb):
     """시즌별로 보드를 정리한다. ranks는 {유저: {시즌: {보드: [순위, 점수]}}}."""
     seasons=lb.get("seasons") or []
@@ -1164,10 +1217,8 @@ def apply_leaderboards(lb):
     if not seasons:
         seasons=[lb.get("season") or "?"]; by_season={seasons[0]: lb.get("boards") or {}}
     sdata={}; ranks={}
-    # 랭크 분포를 서버(지역)별로도 나눈다 — 프로필의 지역, 없으면 접속자 집계가 본 지역
-    with LOCK: reg={pid:p.get("r") for pid,p in CACHE["players"].items() if p.get("r")}
-    with DAU_LOCK:
-        for pid,r in DAU["region"].items(): reg.setdefault(pid,r)
+    # 랭크 분포를 서버(지역)별로도 나눈다 — 프로필의 지역 > 접속자 집계가 본 지역 > 재배포 전에 저장해 둔 지역
+    reg=regions_merge()
     for season in seasons:
         boards={}; meta={}; blabels=[]; hlabels=[]
         for name,mb in (by_season.get(season) or {}).items():
@@ -1326,6 +1377,8 @@ def refresh_leaderboards():
     with open(lbp+".tmp","w",encoding="utf-8") as f: json.dump(result,f,ensure_ascii=False)
     os.replace(lbp+".tmp",lbp)
     apply_leaderboards(result); FRESH["ok"]=True; rank_tick(); dau_save(); build_site_data()
+    try: regions_save()
+    except Exception as e: print("[지역] 저장 오류:",e)
     del result; mem_trim(); rss,hwm=mem_mb()
     print(f"[갱신] 완료 · 시즌 {','.join(seasons)} · 고유유저 {len(allids)} · {time.strftime('%H:%M:%S')}"
           + (f" · 메모리 {rss}MB (최고 {hwm}MB)" if rss else ""))
